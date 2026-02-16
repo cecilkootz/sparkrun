@@ -12,7 +12,6 @@ import pytest
 from click.testing import CliRunner
 
 from sparkrun.cli import main
-from sparkrun.runtimes.vllm import VllmRuntime
 from sparkrun.runtimes.sglang import SglangRuntime
 
 
@@ -68,13 +67,12 @@ class TestVersionAndHelp:
 class TestListCommand:
     """Test the list command."""
 
-    def test_list_shows_bundled_recipes(self, runner):
-        """Test that sparkrun list output includes bundled recipe names."""
+    def test_list_shows_recipes(self, runner):
+        """Test that sparkrun list discovers recipes from the recipes/ directory."""
         result = runner.invoke(main, ["list"])
         assert result.exit_code == 0
-        # Check for at least one bundled recipe
         output_lower = result.output.lower()
-        assert "glm-4.7-flash-awq" in output_lower or "glm" in output_lower
+        assert "qwen3-coder-sglang-tp2" in output_lower
 
     def test_list_table_format(self, runner):
         """Test that list output has header with Name, Runtime, File columns."""
@@ -91,9 +89,9 @@ class TestListCommand:
 class TestShowCommand:
     """Test the show command."""
 
-    def test_show_bundled_recipe(self, runner):
-        """Test that sparkrun show glm-4.7-flash-awq displays recipe details with VRAM."""
-        result = runner.invoke(main, ["show", "glm-4.7-flash-awq"])
+    def test_show_recipe(self, runner):
+        """Test that sparkrun show displays recipe details with VRAM."""
+        result = runner.invoke(main, ["show", "qwen3-coder-sglang-tp2"])
         assert result.exit_code == 0
         # Check for recipe detail fields
         assert "Name:" in result.output
@@ -101,8 +99,8 @@ class TestShowCommand:
         assert "Model:" in result.output
         assert "Container:" in result.output
         # Check for specific recipe values
-        assert "GLM-4.7-Flash-AWQ" in result.output or "glm" in result.output.lower()
-        assert "vllm" in result.output.lower()
+        assert "qwen3" in result.output.lower()
+        assert "sglang" in result.output.lower()
         # VRAM estimation shown by default
         assert "VRAM Estimation" in result.output
 
@@ -116,9 +114,9 @@ class TestShowCommand:
 class TestVramCommand:
     """Test the vram command."""
 
-    def test_vram_bundled_recipe(self, runner):
-        """Test sparkrun vram on a bundled recipe shows estimation."""
-        result = runner.invoke(main, ["vram", "glm-4.7-flash-awq", "--no-auto-detect"])
+    def test_vram_recipe(self, runner):
+        """Test sparkrun vram shows estimation."""
+        result = runner.invoke(main, ["vram", "qwen3-coder-sglang-tp2", "--no-auto-detect"])
         assert result.exit_code == 0
         assert "VRAM Estimation" in result.output
         assert "Model weights:" in result.output
@@ -128,7 +126,7 @@ class TestVramCommand:
     def test_vram_with_gpu_mem(self, runner):
         """Test sparkrun vram with --gpu-mem shows budget analysis."""
         result = runner.invoke(main, [
-            "vram", "glm-4.7-flash-awq",
+            "vram", "qwen3-coder-sglang-tp2",
             "--no-auto-detect",
             "--gpu-mem", "0.9",
         ])
@@ -140,12 +138,12 @@ class TestVramCommand:
     def test_vram_with_tp(self, runner):
         """Test sparkrun vram with --tp override."""
         result = runner.invoke(main, [
-            "vram", "glm-4.7-flash-awq",
+            "vram", "qwen3-coder-sglang-tp2",
             "--no-auto-detect",
-            "--tp", "2",
+            "--tp", "4",
         ])
         assert result.exit_code == 0
-        assert "Tensor parallel:  2" in result.output
+        assert "Tensor parallel:  4" in result.output
 
     def test_vram_nonexistent_recipe(self, runner):
         """Test sparkrun vram on nonexistent recipe exits with error."""
@@ -155,7 +153,7 @@ class TestVramCommand:
 
     def test_show_no_vram_flag(self, runner):
         """Test sparkrun show --no-vram suppresses VRAM estimation."""
-        result = runner.invoke(main, ["show", "glm-4.7-flash-awq", "--no-vram"])
+        result = runner.invoke(main, ["show", "qwen3-coder-sglang-tp2", "--no-vram"])
         assert result.exit_code == 0
         assert "VRAM Estimation" not in result.output
 
@@ -164,8 +162,8 @@ class TestValidateCommand:
     """Test the validate command."""
 
     def test_validate_valid_recipe(self, runner, reset_bootstrap):
-        """Test that sparkrun validate glm-4.7-flash-awq exits 0 with 'is valid' message."""
-        result = runner.invoke(main, ["validate", "glm-4.7-flash-awq"])
+        """Test that sparkrun validate exits 0 with 'is valid' message."""
+        result = runner.invoke(main, ["validate", "qwen3-coder-sglang-tp2"])
         assert result.exit_code == 0
         assert "is valid" in result.output
 
@@ -180,15 +178,15 @@ class TestRunCommand:
     """Test the run command (dry-run only)."""
 
     def test_run_dry_run_solo(self, runner, reset_bootstrap):
-        """Test sparkrun run glm-4.7-flash-awq --solo --dry-run --hosts localhost.
+        """Test sparkrun run --solo --dry-run --hosts localhost.
 
         Should show runtime info and exit 0.
         """
         # Mock runtime.run() to prevent actual SSH execution
-        with mock.patch.object(VllmRuntime, "run", return_value=0) as mock_run:
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
             result = runner.invoke(main, [
                 "run",
-                "glm-4.7-flash-awq",
+                "qwen3-coder-sglang-tp2",
                 "--solo",
                 "--dry-run",
                 "--hosts",
@@ -462,16 +460,16 @@ class TestTensorParallelValidation:
 
     def test_tp_trims_to_one_becomes_solo(self, runner, reset_bootstrap):
         """tensor_parallel=1 with multiple hosts should trim to 1 host and run solo."""
-        with mock.patch.object(VllmRuntime, "run", return_value=0) as mock_run:
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
             result = runner.invoke(main, [
                 "run",
-                "glm-4.7-flash-awq",
+                "qwen3-coder-sglang-tp2",
+                "--tp", "1",
                 "--dry-run",
                 "--hosts", "10.0.0.1,10.0.0.2",
             ])
 
             assert result.exit_code == 0
-            # glm recipe has tensor_parallel=1 in defaults, so should trim to 1 host
             assert "tensor_parallel=1" in result.output
             assert "using 1 of 2 hosts" in result.output
             assert "solo" in result.output.lower()
