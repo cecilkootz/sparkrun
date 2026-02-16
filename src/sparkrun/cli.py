@@ -111,6 +111,7 @@ class ClusterNameType(click.ParamType):
 CLUSTER_NAME = ClusterNameType()
 
 
+# TODO: converge logging with SAF logging
 def _setup_logging(verbose: bool):
     """Configure logging based on verbosity.
 
@@ -165,19 +166,21 @@ def main(ctx, verbose):
 @click.option("--init-port", type=int, default=25000, help="SGLang distributed init port")
 @click.option("--dashboard", is_flag=True, help="Enable Ray dashboard on head node")
 @click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port")
-@click.option("--setup", is_flag=True, hidden=True, help="Deprecated: distribution is now automatic")
+# @click.option("--setup", is_flag=True, hidden=True, help="Deprecated: distribution is now automatic")
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
 @click.option("--skip-ib", is_flag=True, help="Skip InfiniBand detection")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.option("--option", "-o", "options", multiple=True,
               help="Override any recipe default: -o key=value (repeatable)")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
-def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
-        gpu_mem, image, cache_dir, ray_port, init_port, dashboard, dashboard_port, setup,
-        dry_run, foreground, no_follow, skip_ib, config_path, options, extra_args):
+def run(
+        ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
+        gpu_mem, image, cache_dir, ray_port, init_port, dashboard, dashboard_port,
+        dry_run, foreground, no_follow, skip_ib, options, extra_args, config_path=None, setup=True,
+):
     """Run an inference recipe.
 
     RECIPE_NAME can be a recipe file path or a name to search for.
@@ -398,9 +401,9 @@ def run(ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_pa
 
 
 @main.command("list")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def list_cmd(ctx, config_path):
+def list_cmd(ctx, config_path=None):
     """List available recipes."""
     from sparkrun.recipe import list_recipes
     from sparkrun.config import SparkrunConfig
@@ -505,9 +508,9 @@ def _display_vram_estimate(recipe, cli_overrides=None, auto_detect=True):
 @main.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def show(ctx, recipe_name, no_vram, config_path):
+def show(ctx, recipe_name, no_vram, config_path=None):
     """Show detailed recipe information."""
     from sparkrun.recipe import Recipe, find_recipe, RecipeError
     from sparkrun.config import SparkrunConfig
@@ -535,9 +538,9 @@ def show(ctx, recipe_name, no_vram, config_path):
 @click.option("--gpu-mem", type=float, default=None,
               help="Override gpu_memory_utilization (0.0-1.0)")
 @click.option("--no-auto-detect", is_flag=True, help="Skip HuggingFace model auto-detection")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_auto_detect, config_path):
+def vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_auto_detect, config_path=None):
     """Estimate VRAM usage for a recipe on DGX Spark.
 
     Shows model weight size, KV cache requirements, GPU memory budget,
@@ -580,9 +583,9 @@ def vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_auto_dete
 
 @main.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def validate(ctx, recipe_name, config_path):
+def validate(ctx, recipe_name, config_path=None):
     """Validate a recipe file."""
     from sparkrun.bootstrap import init_sparkrun, get_runtime
     from sparkrun.recipe import Recipe, find_recipe, RecipeError
@@ -625,7 +628,7 @@ def validate(ctx, recipe_name, config_path):
 @click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run, config_path):
+def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run, config_path=None, ):
     """Stop a running workload.
 
     RECIPE_NAME identifies the recipe so the correct containers can be found.
@@ -700,9 +703,9 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run, config_path
 @click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
 @click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
 @click.option("--tail", type=int, default=100, help="Number of log lines before following")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def log(ctx, recipe_name, hosts, hosts_file, cluster_name, tail, config_path):
+def log(ctx, recipe_name, hosts, hosts_file, cluster_name, tail, config_path=None):
     """Re-attach to logs of a running workload.
 
     RECIPE_NAME identifies the recipe so the correct containers can be found.
@@ -967,9 +970,9 @@ def recipe(ctx):
 @recipe.command("list")
 @click.option("--registry", default=None, help="Filter by registry name")
 @click.argument("query", required=False)
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_list(ctx, registry, query, config_path):
+def recipe_list(ctx, registry, query, config_path=None):
     """List available recipes from all registries."""
     from sparkrun.recipe import list_recipes
 
@@ -1003,9 +1006,9 @@ def recipe_list(ctx, registry, query, config_path):
 
 @recipe.command("search")
 @click.argument("query")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_search(ctx, query, config_path):
+def recipe_search(ctx, query, config_path=None, ):
     """Search for recipes by name, model, or description."""
     config, registry_mgr = _get_config_and_registry(config_path)
     registry_mgr.ensure_initialized()
@@ -1033,9 +1036,9 @@ def recipe_search(ctx, query, config_path):
 @recipe.command("show")
 @click.argument("recipe_name", type=RECIPE_NAME)
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_show(ctx, recipe_name, no_vram, config_path):
+def recipe_show(ctx, recipe_name, no_vram, config_path=None, ):
     """Show detailed recipe information."""
     from sparkrun.recipe import Recipe, find_recipe, RecipeError
 
@@ -1055,9 +1058,9 @@ def recipe_show(ctx, recipe_name, no_vram, config_path):
 
 @recipe.command("update")
 @click.option("--registry", default=None, help="Update specific registry")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_update(ctx, registry, config_path):
+def recipe_update(ctx, registry, config_path=None, ):
     """Update recipe registries from git."""
     from sparkrun.registry import RegistryError
 
@@ -1075,9 +1078,9 @@ def recipe_update(ctx, registry, config_path):
 
 
 @recipe.command("registries")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_registries(ctx, config_path):
+def recipe_registries(ctx, config_path=None, ):
     """List configured recipe registries."""
     config, registry_mgr = _get_config_and_registry(config_path)
 
@@ -1101,9 +1104,9 @@ def recipe_registries(ctx, config_path):
 @click.option("--url", required=True, help="Git repository URL")
 @click.option("--subpath", required=True, help="Path to recipes within repo")
 @click.option("-d", "--description", default="", help="Registry description")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_add_registry(ctx, name, url, subpath, description, config_path):
+def recipe_add_registry(ctx, name, url, subpath, description, config_path=None, ):
     """Add a new recipe registry."""
     from sparkrun.registry import RegistryEntry, RegistryError
 
@@ -1126,9 +1129,9 @@ def recipe_add_registry(ctx, name, url, subpath, description, config_path):
 
 @recipe.command("remove-registry")
 @click.argument("name")
-@click.option("--config", "config_path", default=None, help="Path to config file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_remove_registry(ctx, name, config_path):
+def recipe_remove_registry(ctx, name, config_path=None, ):
     """Remove a recipe registry."""
     from sparkrun.registry import RegistryError
 
