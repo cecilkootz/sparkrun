@@ -749,9 +749,17 @@ def setup_update(ctx):
         click.echo("Error updating sparkrun: %s" % result.stderr.strip(), err=True)
         sys.exit(1)
 
-    # Show new version
-    from sparkrun import __version__
-    click.echo("sparkrun updated to %s" % __version__)
+    # Show new version — the running process still has the old module
+    # cached, and reload won't help because uv tool installs into a
+    # separate virtualenv.  Ask the newly installed binary instead.
+    ver_result = subprocess.run(
+        ["sparkrun", "--version"],
+        capture_output=True, text=True,
+    )
+    if ver_result.returncode == 0:
+        click.echo(ver_result.stdout.strip())
+    else:
+        click.echo("sparkrun updated (could not determine new version)")
 
 
 @setup.command("ssh")
