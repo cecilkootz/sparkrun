@@ -16,7 +16,7 @@ machine with SSH access.
 # To install uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# automatic installation via uvx (manages virtual environment and 
+# automatic installation via uvx (manages virtual environment and
 # creates alias in your shell, sets up autocomplete too!)
 uvx sparkrun setup install
 
@@ -42,6 +42,9 @@ sparkrun run nemotron3-nano-30b-nvfp4-vllm --hosts 192.168.11.13,192.168.11.14
 # Override settings on the fly
 sparkrun run nemotron3-nano-30b-nvfp4-vllm --hosts 192.168.11.13 --port 9000 --gpu-mem 0.9
 sparkrun run nemotron3-nano-30b-nvfp4-vllm -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
+
+# GGUF quantized models via llama.cpp
+sparkrun run qwen3-1.7b-llama-cpp --solo
 ```
 
 sparkrun always launches jobs in the background (detached containers) and then follows logs. **Ctrl+C detaches from
@@ -151,7 +154,7 @@ sparkrun logs nemotron3-nano-30b-nvfp4-vllm --tp 2
 ### vLLM
 
 First-class support for [vLLM](https://github.com/vllm-project/vllm). Solo and multi-node clustering via Ray. Works with
-ready-built images (e.g. `scitrera/dgx-spark-vllm`). Also works with other images including those build from eugr's repo
+ready-built images (e.g. `scitrera/dgx-spark-vllm`). Also works with other images including those built from eugr's repo
 and/or NVIDIA images.
 
 ### SGLang
@@ -160,6 +163,19 @@ First-class support for [SGLang](https://github.com/sgl-project/sglang). Solo an
 native distributed backend (`--dist-init-addr`, `--nnodes`, `--node-rank`). Works with ready-built images (e.g.
 `scitrera/dgx-spark-sglang`). Should also work with other sglang images, but there seem to be a lot fewer sglang images
 around than vllm images.
+
+### llama.cpp
+
+Support for [llama.cpp](https://github.com/ggml-org/llama.cpp) via `llama-server`. Solo mode with GGUF quantized models.
+Loads models directly from HuggingFace (e.g. `Qwen/Qwen3-1.7B-GGUF:Q4_K_M`). Lightweight alternative to vLLM/SGLang
+for smaller models or constrained environments.
+
+GGUF models use colon syntax to select a quantization variant: `model: Qwen/Qwen3-1.7B-GGUF:Q8_0`. sparkrun
+pre-downloads only the matching quant files and resolves the local cache path so the container doesn't need to
+re-download at serve time.
+
+**Experimental**: Multi-node tensor-parallel inference via llama.cpp's RPC backend. Worker nodes run `rpc-server` and
+the head node connects via `--rpc`. This is still evolving upstream and should be considered experimental.
 
 ### eugr-vllm (compatibility runtime)
 
@@ -185,34 +201,21 @@ runtime_config:
   build_args: [ --some-flag ]
 ```
 
-### llama.cpp
-
-Support for [llama.cpp](https://github.com/ggml-org/llama.cpp) via `llama-server`. Solo mode with GGUF quantized models.
-Loads models directly from HuggingFace (e.g. `Qwen/Qwen3-1.7B-GGUF:Q4_K_M`). Lightweight alternative to vLLM/SGLang
-for smaller models or constrained environments.
-
-**Experimental**: Multi-node tensor-parallel inference via llama.cpp's RPC backend. Worker nodes run `rpc-server` and
-the head node connects via `--rpc`. This is still evolving upstream and should be considered experimental.
-
 ## How It Works
 
 **Recipes** are YAML files that describe an inference workload: the model, container image, runtime, and default
 parameters. sparkrun ships bundled recipes and supports custom registries (any git repo with YAML files). Sparkrun
-includes
-limited recipes and otherwise also includes the eugr repo as a default registry (which also delegates running to eugr's
-repo also...).
-The idea in the long-run is to merge recipes from multiple registries into a single unified catalog. And be able to run
-them
-even if they were designed for different runtimes (e.g. vLLM vs SGLang) without needing to worry about the underlying
-command differences.
+includes limited recipes and otherwise also includes the eugr repo as a default registry (which also delegates running
+to eugr's repo also...). The idea in the long-run is to merge recipes from multiple registries into a single unified
+catalog. And be able to run them even if they were designed for different runtimes (e.g. vLLM vs SGLang) without needing
+to worry about the underlying command differences.
 
 **Runtimes** are plugins that know how to launch a specific inference engine. sparkrun discovers them via Python entry
 points, so custom runtimes can be added by installing a package.
 
 **Orchestration** is handled over SSH. sparkrun detects InfiniBand/RDMA interfaces on your hosts, distributes container
 images and models from local to remote (using the ethernet interfaces of the RDMA interfaces for fast transfers when
-available), configures NCCL environment
-variables, and launches containers with the right networking.
+available), configures NCCL environment variables, and launches containers with the right networking.
 
 Each DGX Spark has one GPU, so tensor parallelism maps directly to node count: `--tp 2` means 2 hosts.
 
@@ -248,26 +251,148 @@ command: |
 
 Any default can be overridden at launch time with `-o key=value` or dedicated flags like `--port`, `--tp`, `--gpu-mem`.
 
+### GGUF recipes (llama.cpp)
+
+GGUF recipes use the `llama-cpp` runtime and specify a quantization variant with colon syntax:
+
+```yaml
+model: Qwen/Qwen3-1.7B-GGUF:Q8_0
+runtime: llama-cpp
+min_nodes: 1
+max_nodes: 1
+container: scitrera/dgx-spark-llama-cpp:latest
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  n_gpu_layers: 99
+  ctx_size: 8192
+
+command: |
+  llama-server \
+      -hf {model} \
+      --host {host} --port {port} \
+      --n-gpu-layers {n_gpu_layers} \
+      --ctx-size {ctx_size} \
+      --flash-attn on --jinja --no-webui
+```
+
+When model pre-sync is enabled (the default), sparkrun downloads only the matching quant files locally, distributes
+them to target hosts, and rewrites `-hf` to `-m` with the resolved container cache path so the container serves from
+the local copy without re-downloading.
+
 ## CLI Reference
 
-| Command                           | Description                              |
-|-----------------------------------|------------------------------------------|
-| `sparkrun run <recipe>`           | Launch an inference workload             |
-| `sparkrun stop <recipe>`          | Stop a running workload                  |
-| `sparkrun logs <recipe>`          | Re-attach to workload logs               |
-| `sparkrun list`                   | List available recipes                   |
-| `sparkrun show <recipe>`          | Show recipe details + VRAM estimate      |
-| `sparkrun search <query>`         | Search recipes by name/model/description |
-| `sparkrun cluster create`         | Save a named cluster definition          |
-| `sparkrun cluster list`           | List saved clusters                      |
-| `sparkrun cluster set-default`    | Set the default cluster                  |
-| `sparkrun recipe registries`      | List configured recipe registries        |
-| `sparkrun recipe add-registry`    | Add a custom recipe registry             |
-| `sparkrun recipe remove-registry` | Remove a recipe registry                 |
-| `sparkrun recipe update`          | Update registries from git               |
-| `sparkrun recipe validate`        | Validate a recipe file                   |
-| `sparkrun recipe vram`            | Estimate VRAM usage for a recipe         |
-| `sparkrun setup completion`       | Install shell tab-completion             |
+### Global options
+
+| Option             | Description                              |
+|--------------------|------------------------------------------|
+| `-v` / `--verbose` | Enable verbose/debug output              |
+| `--version`        | Show version and exit                    |
+| `--help`           | Show help for any command                |
+
+### Workload commands
+
+| Command                   | Description                              |
+|---------------------------|------------------------------------------|
+| `sparkrun run <recipe>`   | Launch an inference workload             |
+| `sparkrun stop <recipe>`  | Stop a running workload                  |
+| `sparkrun logs <recipe>`  | Re-attach to workload logs               |
+
+**`sparkrun run` options:**
+
+| Option                        | Description                                            |
+|-------------------------------|--------------------------------------------------------|
+| `--hosts` / `-H`             | Comma-separated host list (first = head)               |
+| `--hosts-file`               | File with hosts (one per line, `#` comments)           |
+| `--cluster`                  | Use a saved cluster by name                            |
+| `--solo`                     | Force single-node mode                                 |
+| `--port`                     | Override serve port                                    |
+| `--tp` / `--tensor-parallel` | Override tensor parallelism                            |
+| `--gpu-mem`                  | Override GPU memory utilization (0.0-1.0)              |
+| `--image`                    | Override container image                               |
+| `--cache-dir`                | HuggingFace cache directory                            |
+| `--option` / `-o`            | Override any recipe default: `-o key=value` (repeatable) |
+| `--dry-run` / `-n`           | Show what would be done without executing              |
+| `--foreground`               | Run in foreground (don't detach)                       |
+| `--no-follow`                | Don't follow container logs after launch               |
+| `--skip-ib`                  | Skip InfiniBand detection                              |
+| `--ray-port`                 | Ray GCS port (default: 46379)                          |
+| `--init-port`                | SGLang distributed init port (default: 25000)          |
+| `--dashboard`                | Enable Ray dashboard on head node                      |
+| `--dashboard-port`           | Ray dashboard port (default: 8265)                     |
+
+**`sparkrun stop` options:**
+
+| Option                        | Description                                            |
+|-------------------------------|--------------------------------------------------------|
+| `--hosts` / `-H`             | Comma-separated host list                              |
+| `--hosts-file`               | File with hosts                                        |
+| `--cluster`                  | Use a saved cluster by name                            |
+| `--tp` / `--tensor-parallel` | Match host trimming from run                           |
+| `--dry-run` / `-n`           | Show what would be done                                |
+
+**`sparkrun logs` options:**
+
+| Option                        | Description                                            |
+|-------------------------------|--------------------------------------------------------|
+| `--hosts` / `-H`             | Comma-separated host list                              |
+| `--hosts-file`               | File with hosts                                        |
+| `--cluster`                  | Use a saved cluster by name                            |
+| `--tp` / `--tensor-parallel` | Match host trimming from run                           |
+| `--tail`                     | Number of existing log lines to show (default: 100)    |
+
+### Recipe commands
+
+| Command                                       | Description                              |
+|-----------------------------------------------|------------------------------------------|
+| `sparkrun list [query]`                       | List available recipes (alias)           |
+| `sparkrun show <recipe>`                      | Show recipe details + VRAM estimate (alias) |
+| `sparkrun search <query>`                     | Search recipes by name/model/description (alias) |
+| `sparkrun recipe list [query]`                | List available recipes from all registries |
+| `sparkrun recipe show <recipe>`               | Show detailed recipe information         |
+| `sparkrun recipe search <query>`              | Search for recipes by name, model, or description |
+| `sparkrun recipe validate <recipe>`           | Validate a recipe file                   |
+| `sparkrun recipe vram <recipe>`               | Estimate VRAM usage for a recipe         |
+
+**`sparkrun recipe vram` options:**
+
+| Option                        | Description                                            |
+|-------------------------------|--------------------------------------------------------|
+| `--tp` / `--tensor-parallel` | Override tensor parallelism                            |
+| `--max-model-len`            | Override max sequence length                           |
+| `--gpu-mem`                  | Override gpu_memory_utilization (0.0-1.0)              |
+| `--no-auto-detect`           | Skip HuggingFace model auto-detection                  |
+
+### Registry commands
+
+| Command                                       | Description                              |
+|-----------------------------------------------|------------------------------------------|
+| `sparkrun recipe registries`                  | List configured recipe registries        |
+| `sparkrun recipe add-registry <name>`         | Add a custom recipe registry             |
+| `sparkrun recipe remove-registry <name>`      | Remove a recipe registry                 |
+| `sparkrun recipe update`                      | Update registries from git               |
+
+### Cluster commands
+
+| Command                                       | Description                              |
+|-----------------------------------------------|------------------------------------------|
+| `sparkrun cluster create <name>`              | Create a new named cluster               |
+| `sparkrun cluster update <name>`              | Update hosts or description of a cluster |
+| `sparkrun cluster list`                       | List all saved clusters                  |
+| `sparkrun cluster show <name>`                | Show details of a saved cluster          |
+| `sparkrun cluster delete <name>`              | Delete a saved cluster                   |
+| `sparkrun cluster set-default <name>`         | Set the default cluster                  |
+| `sparkrun cluster unset-default`              | Remove the default cluster setting       |
+| `sparkrun cluster default`                    | Show the current default cluster         |
+
+### Setup commands
+
+| Command                                       | Description                              |
+|-----------------------------------------------|------------------------------------------|
+| `sparkrun setup install`                      | Install sparkrun as a uv tool + tab-completion |
+| `sparkrun setup completion`                   | Install shell tab-completion (bash/zsh/fish) |
+| `sparkrun setup update`                       | Update sparkrun to the latest version    |
 
 ## Roadmap
 
