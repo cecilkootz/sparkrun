@@ -319,7 +319,7 @@ class LlamaCppRuntime(RuntimePlugin):
 
         logger.warning(
             "llama.cpp RPC clustering is EXPERIMENTAL. "
-            "Behaviour may change in future versions."
+            "Behavior may change in future versions."
         )
 
         head_host = hosts[0]
@@ -351,7 +351,6 @@ class LlamaCppRuntime(RuntimePlugin):
         if nccl_env is not None:
             logger.info("Step 2/5: Using pre-detected NCCL env (%d vars)", len(nccl_env))
         elif not skip_ib_detect:
-            nccl_env = {}
             logger.info("Step 2/5: Detecting InfiniBand on all hosts...")
             nccl_env = detect_infiniband(
                 hosts, head_host=head_host,

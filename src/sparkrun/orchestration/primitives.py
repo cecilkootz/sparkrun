@@ -48,8 +48,8 @@ def build_ssh_kwargs(config: SparkrunConfig | None) -> dict:
 
 
 def build_volumes(
-    cache_dir: str | None = None,
-    extra: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the standard volume mapping for HuggingFace cache + extras.
 
@@ -82,10 +82,10 @@ def merge_env(*env_dicts: dict[str, str] | None) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def detect_infiniband(
-    hosts: list[str],
-    head_host: str | None = None,
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        hosts: list[str],
+        head_host: str | None = None,
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> dict[str, str]:
     """Run InfiniBand detection on *hosts* and return NCCL env vars.
 
@@ -129,7 +129,7 @@ def detect_infiniband(
 
 
 def detect_infiniband_local(
-    dry_run: bool = False,
+        dry_run: bool = False,
 ) -> dict[str, str]:
     """Run InfiniBand detection locally and return NCCL env vars."""
     ib_script = generate_ib_detect_script()
@@ -154,10 +154,10 @@ def detect_infiniband_local(
 # ---------------------------------------------------------------------------
 
 def cleanup_containers(
-    hosts: list[str],
-    container_names: list[str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        hosts: list[str],
+        container_names: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> None:
     """Stop and remove named containers on every host.
 
@@ -174,8 +174,8 @@ def cleanup_containers(
 
 
 def cleanup_containers_local(
-    container_names: list[str],
-    dry_run: bool = False,
+        container_names: list[str],
+        dry_run: bool = False,
 ) -> None:
     """Stop and remove named containers locally."""
     cmds = "; ".join(docker_stop_cmd(name) for name in container_names)
@@ -187,9 +187,9 @@ def cleanup_containers_local(
 # ---------------------------------------------------------------------------
 
 def detect_host_ip(
-    host: str,
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        host: str,
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> str:
     """Detect the management IP of a remote host.
 
@@ -224,12 +224,12 @@ def detect_host_ip(
 # ---------------------------------------------------------------------------
 
 def wait_for_port(
-    host: str,
-    port: int,
-    max_retries: int = 60,
-    retry_interval: int = 2,
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        host: str,
+        port: int,
+        max_retries: int = 60,
+        retry_interval: int = 2,
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> bool:
     """Poll until a TCP port is listening on a remote host.
 
@@ -270,6 +270,7 @@ def wait_for_port(
 
 def is_valid_ip(ip: str) -> bool:
     """Basic check if a string looks like an IPv4 address."""
+    # TODO: either do regex or use ipaddress module
     parts = ip.strip().split(".")
     if len(parts) != 4:
         return False
@@ -315,11 +316,11 @@ def run_local_script(script: str, dry_run: bool = False) -> RemoteResult:
 # ---------------------------------------------------------------------------
 
 def run_script_on_host(
-    host: str,
-    script: str,
-    ssh_kwargs: dict | None = None,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        host: str,
+        script: str,
+        ssh_kwargs: dict | None = None,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> RemoteResult:
     """Run a script on a host — dispatches to local or remote execution.
 
@@ -333,11 +334,11 @@ def run_script_on_host(
 
 
 def run_command_on_host(
-    host: str,
-    command: str,
-    ssh_kwargs: dict | None = None,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        host: str,
+        command: str,
+        ssh_kwargs: dict | None = None,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> RemoteResult:
     """Run a command on a host — dispatches to local or remote execution."""
     if host in ("localhost", "127.0.0.1", ""):
