@@ -933,10 +933,15 @@ def cluster_list(ctx):
     click.echo("-" * 93)
     for c in clusters:
         marker = "* " if c.name == default_name else "  "
-        hosts_str = ", ".join(c.hosts)
-        if len(hosts_str) > 37:
-            hosts_str = hosts_str[:37] + "..."
-        click.echo(f"{marker}{c.name:<20} {hosts_str:<40} {c.description:<30}")
+        desc = c.description or ""
+        # Break hosts into lines of 2 addresses each
+        host_lines = []
+        for i in range(0, len(c.hosts), 2):
+            host_lines.append(", ".join(c.hosts[i:i + 2]))
+        first_hosts = host_lines[0] if host_lines else ""
+        click.echo(f"{marker}{c.name:<20} {first_hosts:<40} {desc:<30}")
+        for extra in host_lines[1:]:
+            click.echo(f"  {'':<20} {extra:<40}")
 
     if default_name:
         click.echo(f"\n* = default cluster")

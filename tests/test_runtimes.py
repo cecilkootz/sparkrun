@@ -547,9 +547,9 @@ class TestVllmFollowLogs:
 class TestSglangFollowLogs:
     """Test SglangRuntime.follow_logs()."""
 
-    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
-    def test_follow_logs_solo_delegates_to_base(self, mock_stream):
-        """Single-host sglang delegates to base (solo container)."""
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
+    def test_follow_logs_solo_uses_file_logs(self, mock_stream):
+        """Single-host sglang tails serve log file inside solo container."""
         runtime = SglangRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1"],

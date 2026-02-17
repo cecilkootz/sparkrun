@@ -36,11 +36,11 @@ class RemoteResult:
 
 
 def build_ssh_cmd(
-    host: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    connect_timeout: int = 10,
+        host: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
 ) -> list[str]:
     """Build the base SSH command with standard options.
 
@@ -65,14 +65,14 @@ def build_ssh_cmd(
 
 
 def run_remote_script(
-    host: str,
-    script: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    connect_timeout: int = 10,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        host: str,
+        script: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> RemoteResult:
     """Execute a script on a remote host via stdin piping.
 
@@ -101,9 +101,9 @@ def run_remote_script(
     cmd = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options, connect_timeout)
     cmd.extend(["bash", "-s"])
 
-    logger.info("  SSH script -> %s (%d bytes)%s",
-                host, len(script),
-                f" [timeout={timeout}s]" if timeout else "")
+    logger.debug("  SSH script -> %s (%d bytes)%s",
+                 host, len(script),
+                 f" [timeout={timeout}s]" if timeout else "")
     logger.debug("SSH command: %s", " ".join(cmd))
     logger.debug("Script: %d lines, %d bytes", script_lines, len(script))
 
@@ -124,7 +124,7 @@ def run_remote_script(
             stderr=proc.stderr,
         )
         if result.success:
-            logger.info("  SSH script <- %s OK (%.1fs)", host, elapsed)
+            logger.debug("  SSH script <- %s OK (%.1fs)", host, elapsed)
             if proc.stdout.strip():
                 logger.debug("Remote script stdout on %s:\n%s", host, proc.stdout.strip())
             if proc.stderr.strip():
@@ -151,14 +151,14 @@ def run_remote_script(
 
 
 def run_remote_command(
-    host: str,
-    command: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    connect_timeout: int = 10,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        host: str,
+        command: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> RemoteResult:
     """Execute a single command on a remote host (not via bash -s).
 
@@ -184,7 +184,7 @@ def run_remote_command(
     cmd = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options, connect_timeout)
     cmd.append(command)
 
-    logger.info("  SSH cmd -> %s: %s", host, command[:80])
+    logger.debug("  SSH cmd -> %s: %s", host, command[:80])
     logger.debug("SSH command: %s", " ".join(cmd))
 
     t0 = time.monotonic()
@@ -197,7 +197,7 @@ def run_remote_command(
             stdout=proc.stdout,
             stderr=proc.stderr,
         )
-        logger.info("  SSH cmd <- %s rc=%d (%.1fs)", host, proc.returncode, elapsed)
+        logger.debug("  SSH cmd <- %s rc=%d (%.1fs)", host, proc.returncode, elapsed)
         if proc.stdout.strip():
             logger.debug("Remote command stdout on %s:\n%s", host, proc.stdout.strip())
         if proc.stderr.strip():
@@ -214,13 +214,13 @@ def run_remote_command(
 
 
 def stream_remote_logs(
-    host: str,
-    container_name: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    tail: int = 100,
-    dry_run: bool = False,
+        host: str,
+        container_name: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        tail: int = 100,
+        dry_run: bool = False,
 ) -> None:
     """Stream ``docker logs -f`` output to the terminal.
 
@@ -266,14 +266,14 @@ def stream_remote_logs(
 
 
 def stream_container_file_logs(
-    host: str,
-    container_name: str,
-    log_file: str = "/tmp/sparkrun_serve.log",
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    tail: int = 100,
-    dry_run: bool = False,
+        host: str,
+        container_name: str,
+        log_file: str = "/tmp/sparkrun_serve.log",
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        tail: int = 100,
+        dry_run: bool = False,
 ) -> None:
     """Stream a log file from inside a running container.
 
@@ -316,13 +316,13 @@ def stream_container_file_logs(
 
 
 def run_remote_scripts_parallel(
-    hosts: list[str],
-    script: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        hosts: list[str],
+        script: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> list[RemoteResult]:
     """Execute the same script on multiple hosts in parallel using threads.
 
@@ -372,10 +372,10 @@ def run_remote_scripts_parallel(
 
 
 def build_ssh_opts_string(
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    connect_timeout: int = 10,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
 ) -> str:
     """Build a flat SSH options string for embedding in bash script templates.
 
@@ -402,15 +402,15 @@ def build_ssh_opts_string(
 
 
 def run_pipeline_to_remote(
-    host: str,
-    local_cmd: str,
-    remote_cmd: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    connect_timeout: int = 10,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        host: str,
+        local_cmd: str,
+        remote_cmd: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> RemoteResult:
     """Run a shell pipeline that streams data from a local command to a remote command.
 
@@ -479,16 +479,16 @@ def run_pipeline_to_remote(
 
 
 def run_rsync(
-    source_path: str,
-    host: str,
-    dest_path: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    connect_timeout: int = 10,
-    rsync_options: list[str] | None = None,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        source_path: str,
+        host: str,
+        dest_path: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
+        rsync_options: list[str] | None = None,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> RemoteResult:
     """Rsync a local path to a remote host.
 
@@ -559,15 +559,15 @@ def run_rsync(
 
 
 def run_pipeline_to_remotes_parallel(
-    hosts: list[str],
-    local_cmd: str,
-    remote_cmd: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    connect_timeout: int = 10,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        hosts: list[str],
+        local_cmd: str,
+        remote_cmd: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> list[RemoteResult]:
     """Run a local-to-remote pipeline on multiple hosts in parallel.
 
@@ -617,16 +617,16 @@ def run_pipeline_to_remotes_parallel(
 
 
 def run_rsync_parallel(
-    source_path: str,
-    hosts: list[str],
-    dest_path: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    connect_timeout: int = 10,
-    rsync_options: list[str] | None = None,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        source_path: str,
+        hosts: list[str],
+        dest_path: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        connect_timeout: int = 10,
+        rsync_options: list[str] | None = None,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> list[RemoteResult]:
     """Rsync a local path to multiple hosts in parallel.
 

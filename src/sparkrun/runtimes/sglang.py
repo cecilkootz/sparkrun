@@ -165,19 +165,30 @@ class SglangRuntime(RuntimePlugin):
         dry_run: bool = False,
         tail: int = 100,
     ) -> None:
-        """Follow container logs — solo or native cluster head (node_0).
+        """Follow serve logs — solo or native cluster head (node_0).
 
-        For a single host, delegates to the base implementation (solo
-        container).  For multiple hosts, follows the head node container
-        (``{cluster_id}_node_0``) on the first host.
+        Solo mode uses ``_run_solo`` which launches ``sleep infinity`` and
+        exec's the serve command with output to ``/tmp/sparkrun_serve.log``,
+        so we tail that file inside the container (same as vLLM).
+
+        Cluster mode runs the serve command directly as the container
+        entrypoint, so ``docker logs`` is correct.
         """
-        if len(hosts) <= 1:
-            return super().follow_logs(
-                hosts, cluster_id=cluster_id, config=config,
-                dry_run=dry_run, tail=tail,
-            )
-
         from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        if len(hosts) <= 1:
+            from sparkrun.orchestration.docker import generate_container_name
+            from sparkrun.orchestration.ssh import stream_container_file_logs
+
+            host = hosts[0] if hosts else "localhost"
+            container_name = generate_container_name(cluster_id, "solo")
+            ssh_kwargs = build_ssh_kwargs(config)
+
+            stream_container_file_logs(
+                host, container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
+            )
+            return
+
         from sparkrun.orchestration.ssh import stream_remote_logs
 
         head_host = hosts[0]
