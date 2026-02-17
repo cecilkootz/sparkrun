@@ -219,6 +219,41 @@ available), configures NCCL environment variables, and launches containers with 
 
 Each DGX Spark has one GPU, so tensor parallelism maps directly to node count: `--tp 2` means 2 hosts.
 
+### SSH Prerequisites
+
+All multi-node orchestration relies on SSH. Before using sparkrun with remote hosts, you need passwordless SSH
+access from your control machine to every node in the cluster, and between nodes for container image and model
+distribution.
+
+```bash
+# Verify you can reach each host without a password prompt
+ssh 192.168.11.13 hostname
+ssh 192.168.11.14 hostname
+
+# If not, set up key-based auth
+ssh-keygen -t ed25519        # if you don't already have a key
+ssh-copy-id 192.168.11.13
+ssh-copy-id 192.168.11.14
+```
+
+For multi-node clusters, the nodes also need to reach each other over SSH (head distributes container images and
+model weights to workers via rsync). The simplest approach is to set up a full SSH mesh across all nodes.
+
+sparkrun uses the default SSH key and config from your environment. If your hosts require a non-default port, user,
+or identity file, configure them in `~/.ssh/config`:
+
+```
+Host spark1
+    HostName 192.168.11.13
+    User dgxuser
+
+Host spark2
+    HostName 192.168.11.14
+    User dgxuser
+```
+
+Solo mode (`--solo`) runs on a single host and still uses SSH unless the target is `localhost`.
+
 ## Recipes
 
 A recipe is a YAML file:
