@@ -1599,7 +1599,7 @@ def _distribute_resources(
 
     # Step 1: Detect InfiniBand for NCCL env + transfer routing
     if not skip_ib:
-        click.echo(f"Detecting InfiniBand on {len(host_list)} host(s)...")
+        # click.echo(f"Detecting InfiniBand on {len(host_list)} host(s)...")
         ib_result = detect_ib_for_hosts(
             host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
         )
@@ -1614,7 +1614,7 @@ def _distribute_resources(
             )
 
     # Step 2: Distribute container image
-    click.echo(f"Distributing image to {len(host_list)} host(s)...")
+    # click.echo(f"Distributing image to {len(host_list)} host(s)...")
     img_failed = distribute_image_from_local(
         image, host_list,
         transfer_hosts=transfer_hosts,
