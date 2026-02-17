@@ -221,11 +221,15 @@ Each DGX Spark has one GPU, so tensor parallelism maps directly to node count: `
 
 ### SSH Prerequisites
 
-All multi-node orchestration relies on SSH. Before using sparkrun with remote hosts, you need passwordless SSH
-access from your control machine to every node in the cluster, and between nodes for container image and model
-distribution.
+All multi-node orchestration relies on SSH. At minimum, you need **passwordless SSH from your control machine
+to every cluster node**. sparkrun pulls container images and models locally and pushes them to each node
+directly, so node-to-node SSH is not strictly required for the default workflow.
 
-The easiest way to set this up is with `sparkrun setup ssh`, which creates a full SSH mesh across all hosts:
+That said, setting up a **full SSH mesh** (every host can reach every other host) is recommended — it enables
+alternative distribution strategies and is generally useful for cluster administration.
+
+The easiest way to set this up is `sparkrun setup ssh`, which creates a full mesh including your control
+machine:
 
 ```bash
 # Set up passwordless SSH mesh across your cluster
@@ -238,27 +242,31 @@ sparkrun setup ssh --cluster mylab
 sparkrun setup ssh
 ```
 
-You will be prompted for passwords on first connection to each host. After that, all hosts can SSH to each
-other without passwords.
+You will be prompted for passwords on first connection to each host. After that, every host
+(including your control machine) can SSH to every other host without passwords.
 
-Alternatively, you can set up SSH manually:
+<details>
+<summary>Manual SSH setup (without sparkrun setup ssh)</summary>
+
+If you prefer to set up SSH yourself, you need key-based auth from your control machine to each node:
 
 ```bash
-# Verify you can reach each host without a password prompt
-ssh 192.168.11.13 hostname
-ssh 192.168.11.14 hostname
+# Generate a key if you don't have one
+ssh-keygen -t ed25519
 
-# If not, set up key-based auth
-ssh-keygen -t ed25519        # if you don't already have a key
+# Copy to each node
 ssh-copy-id 192.168.11.13
 ssh-copy-id 192.168.11.14
 ```
 
-For multi-node clusters, the nodes also need to reach each other over SSH (head distributes container images and
-model weights to workers via rsync). The simplest approach is to set up a full SSH mesh across all nodes.
+</details>
 
-sparkrun uses the default SSH key and config from your environment. If your hosts require a non-default port, user,
-or identity file, configure them in `~/.ssh/config`:
+**SSH user**: By default sparkrun uses your current OS user for SSH. You can set a per-cluster user
+with `sparkrun cluster create --user dgxuser` or `sparkrun cluster update --user dgxuser`, or override
+per-command with `--user`.
+
+<details>
+<summary>For more advanced SSH configuration (non-default ports, identity files), use `~/.ssh/config`.</summary>
 
 ```
 Host spark1
@@ -269,6 +277,8 @@ Host spark2
     HostName 192.168.11.14
     User dgxuser
 ```
+
+</details>
 
 Solo mode (`--solo`) runs on a single host and still uses SSH unless the target is `localhost`.
 
@@ -347,24 +357,24 @@ the local copy without re-downloading.
 
 ### Global options
 
-| Option             | Description                              |
-|--------------------|------------------------------------------|
-| `-v` / `--verbose` | Enable verbose/debug output              |
-| `--version`        | Show version and exit                    |
-| `--help`           | Show help for any command                |
+| Option             | Description                 |
+|--------------------|-----------------------------|
+| `-v` / `--verbose` | Enable verbose/debug output |
+| `--version`        | Show version and exit       |
+| `--help`           | Show help for any command   |
 
 ### Workload commands
 
-| Command                   | Description                              |
-|---------------------------|------------------------------------------|
-| `sparkrun run <recipe>`   | Launch an inference workload             |
-| `sparkrun stop <recipe>`  | Stop a running workload                  |
-| `sparkrun logs <recipe>`  | Re-attach to workload logs               |
+| Command                  | Description                  |
+|--------------------------|------------------------------|
+| `sparkrun run <recipe>`  | Launch an inference workload |
+| `sparkrun stop <recipe>` | Stop a running workload      |
+| `sparkrun logs <recipe>` | Re-attach to workload logs   |
 
 **`sparkrun run` options:**
 
-| Option                        | Description                                              |
-|-------------------------------|----------------------------------------------------------|
+| Option                       | Description                                              |
+|------------------------------|----------------------------------------------------------|
 | `--hosts` / `-H`             | Comma-separated host list (first = head)                 |
 | `--hosts-file`               | File with hosts (one per line, `#` comments)             |
 | `--cluster`                  | Use a saved cluster by name                              |
@@ -386,76 +396,76 @@ the local copy without re-downloading.
 
 **`sparkrun stop` options:**
 
-| Option                        | Description                                            |
-|-------------------------------|--------------------------------------------------------|
-| `--hosts` / `-H`             | Comma-separated host list                              |
-| `--hosts-file`               | File with hosts                                        |
-| `--cluster`                  | Use a saved cluster by name                            |
-| `--tp` / `--tensor-parallel` | Match host trimming from run                           |
-| `--dry-run` / `-n`           | Show what would be done                                |
+| Option                       | Description                  |
+|------------------------------|------------------------------|
+| `--hosts` / `-H`             | Comma-separated host list    |
+| `--hosts-file`               | File with hosts              |
+| `--cluster`                  | Use a saved cluster by name  |
+| `--tp` / `--tensor-parallel` | Match host trimming from run |
+| `--dry-run` / `-n`           | Show what would be done      |
 
 **`sparkrun logs` options:**
 
-| Option                        | Description                                            |
-|-------------------------------|--------------------------------------------------------|
-| `--hosts` / `-H`             | Comma-separated host list                              |
-| `--hosts-file`               | File with hosts                                        |
-| `--cluster`                  | Use a saved cluster by name                            |
-| `--tp` / `--tensor-parallel` | Match host trimming from run                           |
-| `--tail`                     | Number of existing log lines to show (default: 100)    |
+| Option                       | Description                                         |
+|------------------------------|-----------------------------------------------------|
+| `--hosts` / `-H`             | Comma-separated host list                           |
+| `--hosts-file`               | File with hosts                                     |
+| `--cluster`                  | Use a saved cluster by name                         |
+| `--tp` / `--tensor-parallel` | Match host trimming from run                        |
+| `--tail`                     | Number of existing log lines to show (default: 100) |
 
 ### Recipe commands
 
-| Command                                       | Description                              |
-|-----------------------------------------------|------------------------------------------|
-| `sparkrun list [query]`                       | List available recipes (alias)           |
-| `sparkrun show <recipe>`                      | Show recipe details + VRAM estimate (alias) |
-| `sparkrun search <query>`                     | Search recipes by name/model/description (alias) |
-| `sparkrun recipe list [query]`                | List available recipes from all registries |
-| `sparkrun recipe show <recipe>`               | Show detailed recipe information         |
-| `sparkrun recipe search <query>`              | Search for recipes by name, model, or description |
-| `sparkrun recipe validate <recipe>`           | Validate a recipe file                   |
-| `sparkrun recipe vram <recipe>`               | Estimate VRAM usage for a recipe         |
+| Command                             | Description                                       |
+|-------------------------------------|---------------------------------------------------|
+| `sparkrun list [query]`             | List available recipes (alias)                    |
+| `sparkrun show <recipe>`            | Show recipe details + VRAM estimate (alias)       |
+| `sparkrun search <query>`           | Search recipes by name/model/description (alias)  |
+| `sparkrun recipe list [query]`      | List available recipes from all registries        |
+| `sparkrun recipe show <recipe>`     | Show detailed recipe information                  |
+| `sparkrun recipe search <query>`    | Search for recipes by name, model, or description |
+| `sparkrun recipe validate <recipe>` | Validate a recipe file                            |
+| `sparkrun recipe vram <recipe>`     | Estimate VRAM usage for a recipe                  |
 
 **`sparkrun recipe vram` options:**
 
-| Option                        | Description                                            |
-|-------------------------------|--------------------------------------------------------|
-| `--tp` / `--tensor-parallel` | Override tensor parallelism                            |
-| `--max-model-len`            | Override max sequence length                           |
-| `--gpu-mem`                  | Override gpu_memory_utilization (0.0-1.0)              |
-| `--no-auto-detect`           | Skip HuggingFace model auto-detection                  |
+| Option                       | Description                               |
+|------------------------------|-------------------------------------------|
+| `--tp` / `--tensor-parallel` | Override tensor parallelism               |
+| `--max-model-len`            | Override max sequence length              |
+| `--gpu-mem`                  | Override gpu_memory_utilization (0.0-1.0) |
+| `--no-auto-detect`           | Skip HuggingFace model auto-detection     |
 
 ### Registry commands
 
-| Command                                       | Description                              |
-|-----------------------------------------------|------------------------------------------|
-| `sparkrun recipe registries`                  | List configured recipe registries        |
-| `sparkrun recipe add-registry <name>`         | Add a custom recipe registry             |
-| `sparkrun recipe remove-registry <name>`      | Remove a recipe registry                 |
-| `sparkrun recipe update`                      | Update registries from git               |
+| Command                                  | Description                       |
+|------------------------------------------|-----------------------------------|
+| `sparkrun recipe registries`             | List configured recipe registries |
+| `sparkrun recipe add-registry <name>`    | Add a custom recipe registry      |
+| `sparkrun recipe remove-registry <name>` | Remove a recipe registry          |
+| `sparkrun recipe update`                 | Update registries from git        |
 
 ### Cluster commands
 
-| Command                                       | Description                              |
-|-----------------------------------------------|------------------------------------------|
-| `sparkrun cluster create <name>`              | Create a new named cluster (`--user` sets SSH user) |
-| `sparkrun cluster update <name>`              | Update hosts, description, or user of a cluster |
-| `sparkrun cluster list`                       | List all saved clusters                  |
-| `sparkrun cluster show <name>`                | Show details of a saved cluster          |
-| `sparkrun cluster delete <name>`              | Delete a saved cluster                   |
-| `sparkrun cluster set-default <name>`         | Set the default cluster                  |
-| `sparkrun cluster unset-default`              | Remove the default cluster setting       |
-| `sparkrun cluster default`                    | Show the current default cluster         |
+| Command                               | Description                                         |
+|---------------------------------------|-----------------------------------------------------|
+| `sparkrun cluster create <name>`      | Create a new named cluster (`--user` sets SSH user) |
+| `sparkrun cluster update <name>`      | Update hosts, description, or user of a cluster     |
+| `sparkrun cluster list`               | List all saved clusters                             |
+| `sparkrun cluster show <name>`        | Show details of a saved cluster                     |
+| `sparkrun cluster delete <name>`      | Delete a saved cluster                              |
+| `sparkrun cluster set-default <name>` | Set the default cluster                             |
+| `sparkrun cluster unset-default`      | Remove the default cluster setting                  |
+| `sparkrun cluster default`            | Show the current default cluster                    |
 
 ### Setup commands
 
-| Command                                       | Description                              |
-|-----------------------------------------------|------------------------------------------|
-| `sparkrun setup install`                      | Install sparkrun as a uv tool + tab-completion |
-| `sparkrun setup completion`                   | Install shell tab-completion (bash/zsh/fish) |
-| `sparkrun setup update`                       | Update sparkrun to the latest version    |
-| `sparkrun setup ssh`                          | Set up passwordless SSH mesh across hosts |
+| Command                     | Description                                    |
+|-----------------------------|------------------------------------------------|
+| `sparkrun setup install`    | Install sparkrun as a uv tool + tab-completion |
+| `sparkrun setup completion` | Install shell tab-completion (bash/zsh/fish)   |
+| `sparkrun setup update`     | Update sparkrun to the latest version          |
+| `sparkrun setup ssh`        | Set up passwordless SSH mesh across hosts      |
 
 ## Roadmap
 
