@@ -442,10 +442,11 @@ class SglangRuntime(RuntimePlugin):
                 head_host, init_port,
                 max_retries=60, retry_interval=2,
                 ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                container_name=head_container,
             )
             if not ready:
                 logger.error(
-                    "Head node failed to become ready after 120s. "
+                    "Head node failed to become ready. "
                     "Check logs: ssh %s 'docker logs %s'", head_host, head_container,
                 )
                 return 1
