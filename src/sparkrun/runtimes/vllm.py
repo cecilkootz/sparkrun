@@ -333,8 +333,20 @@ class VllmRuntime(RuntimePlugin):
         logger.info("  Ray head launched. HEAD_IP=%s", head_ip)
 
         if not dry_run:
-            logger.info("  Waiting 5s for Ray head to initialize...")
-            time.sleep(5)
+            from sparkrun.orchestration.primitives import wait_for_port
+            logger.info("  Waiting for Ray head port %s:%d...", head_host, ray_port)
+            ready = wait_for_port(
+                head_host, ray_port,
+                max_retries=30, retry_interval=2,
+                ssh_kwargs=ssh_kwargs,
+                container_name=head_container,
+            )
+            if not ready:
+                logger.error(
+                    "Ray head failed to become ready. "
+                    "Check logs: ssh %s 'docker logs %s'", head_host, head_container,
+                )
+                return 1
         logger.info("Step 3/5: Ray head ready (%.1fs)", time.monotonic() - t0)
 
         # Step 4: Launch Ray workers (parallel)

@@ -237,6 +237,31 @@ def detect_host_ip(
 
 
 # ---------------------------------------------------------------------------
+# Container liveness
+# ---------------------------------------------------------------------------
+
+def is_container_running(
+        host: str,
+        container_name: str,
+        ssh_kwargs: dict | None = None,
+) -> bool:
+    """Check whether a Docker container is running on a remote host.
+
+    Args:
+        host: Remote hostname.
+        container_name: Docker container name.
+        ssh_kwargs: SSH connection parameters.
+
+    Returns:
+        True if the container is currently running.
+    """
+    kw = ssh_kwargs or {}
+    cmd = "docker inspect -f '{{.State.Running}}' %s 2>/dev/null" % container_name
+    result = run_remote_command(host, cmd, timeout=10, **kw)
+    return result.success and "true" in result.stdout.lower()
+
+
+# ---------------------------------------------------------------------------
 # Port readiness polling
 # ---------------------------------------------------------------------------
 
@@ -247,6 +272,7 @@ def wait_for_port(
         retry_interval: int = 2,
         ssh_kwargs: dict | None = None,
         dry_run: bool = False,
+        container_name: str | None = None,
 ) -> bool:
     """Poll until a TCP port is listening on a remote host.
 
@@ -257,9 +283,13 @@ def wait_for_port(
         retry_interval: Seconds between retries.
         ssh_kwargs: SSH connection parameters.
         dry_run: Skip waiting in dry-run mode.
+        container_name: If provided, verify the container is still
+            running on each iteration.  Aborts early if the container
+            has exited (e.g. crashed on startup).
 
     Returns:
-        True if port became reachable, False if timed out.
+        True if port became reachable, False if timed out or the
+        container exited.
     """
     if dry_run:
         return True
@@ -267,6 +297,15 @@ def wait_for_port(
     kw = ssh_kwargs or {}
     check_cmd = "nc -z localhost %d" % port
     for attempt in range(1, max_retries + 1):
+        # Check container liveness before polling the port
+        if container_name and attempt > 1:
+            if not is_container_running(host, container_name, ssh_kwargs=kw):
+                logger.error(
+                    "  Container %s is no longer running on %s — aborting wait",
+                    container_name, host,
+                )
+                return False
+
         result = run_remote_command(host, check_cmd, timeout=5, **kw)
         if result.success:
             logger.info("  Port %d ready after %ds", port, attempt * retry_interval)
