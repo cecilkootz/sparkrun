@@ -1,6 +1,6 @@
 ---
 name: run
-description: Run, monitor, and stop inference workloads on NVIDIA DGX Spark
+description: "ALWAYS invoke this skill before running any sparkrun CLI commands. Never run sparkrun directly via Bash without loading this skill first. Covers launching, monitoring, stopping, and checking status of inference workloads on NVIDIA DGX Spark."
 ---
 
 <Purpose>
@@ -44,15 +44,18 @@ sparkrun run <recipe> -o max_model_len=8192 -o attention_backend=triton --no-fol
 sparkrun run <recipe> --dry-run
 ```
 
-**CRITICAL: Always use `--no-follow`** when running from an agent/skill context to avoid blocking on log streaming. Then use `sparkrun status` or `sparkrun logs` separately to check on the job.
+**CRITICAL: Always use `--no-follow`** when running from an agent/skill context to avoid blocking on log streaming. Then use `sparkrun cluster status` or `sparkrun logs` separately to check on the job.
 
 ## Check Status
 
 ```bash
 # Show all sparkrun containers across cluster hosts
-sparkrun status --cluster <name>
-sparkrun status --hosts <ip1>,<ip2>,...
-sparkrun status
+# NOTE: `sparkrun status` is an alias for `sparkrun cluster status` — only run one.
+sparkrun cluster status
+
+# With explicit targets
+sparkrun cluster status --cluster <name>
+sparkrun cluster status --hosts <ip1>,<ip2>,...
 
 # Output shows:
 #   - Grouped containers by job (with recipe name if cached)
@@ -80,14 +83,22 @@ sparkrun stop <recipe> --dry-run
 ## Browse and Inspect Recipes
 
 ```bash
+# List all available recipes (no filter)
 sparkrun list
-sparkrun list <query>
-sparkrun show <recipe>
-sparkrun show <recipe> --tp <N>
-sparkrun search <query>
+
+# Search for recipes by name, model, runtime, or description (contains-match)
+sparkrun recipe search <query>
+
+# Inspect a specific known recipe (by exact name or file path)
+sparkrun recipe show <recipe>
+sparkrun recipe show <recipe> --tp <N>
+
+# Validate or estimate VRAM
 sparkrun recipe validate <recipe>
 sparkrun recipe vram <recipe> --tp <N> --max-model-len 32768
 ```
+
+Use `sparkrun recipe search` as the first attempt when looking for a particular recipe. Use `sparkrun recipe show` when given a specific recipe name or file -- it may not appear in search results.
 
 </Steps>
 
@@ -96,7 +107,7 @@ All sparkrun commands are executed via the Bash tool. No MCP tools are required.
 
 When running workloads:
 1. Always use `--no-follow` flag with `sparkrun run`
-2. After launching, run `sparkrun status` to confirm containers are running
+2. After launching, run `sparkrun cluster status` to confirm containers are running
 3. Use the logs/stop commands from status output to manage jobs
 </Tool_Usage>
 
@@ -124,7 +135,7 @@ When running workloads:
 
 <Important_Notes>
 - **Always use `--no-follow`** when running from an automated/agent context to avoid blocking
-- Use `sparkrun status` after launching to confirm containers are running
+- Use `sparkrun cluster status` after launching to confirm containers are running
 - `--tp N` must match the number of hosts (DGX Spark = 1 GPU per host)
 - `sparkrun stop` and `sparkrun logs` need the same `--hosts`/`--cluster`/`--tp` flags as the original `run`
 - Use `sparkrun show <recipe> --tp N` to preview VRAM estimates before running

@@ -88,8 +88,9 @@ if [ ${#ACTIVE_HCAS[@]} -eq 0 ]; then
     exit 0
 fi
 
-# Detect management network interface (default route)
+# Detect management network interface (default route) and its IP
 DEFAULT_IF=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'dev \K\S+' || echo "eth0")
+MGMT_IP=$(ip -4 addr show "$DEFAULT_IF" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
 
 # Build comma-separated lists
 HCA_LIST=$(IFS=,; echo "${ACTIVE_HCAS[*]}")
@@ -113,6 +114,7 @@ echo "  NET_LIST   = $NET_LIST" >&2
 echo "  IB_IPS     = $IB_IP_LIST" >&2
 echo "  GID_INDEX  = $GID_INDEX" >&2
 echo "  DEFAULT_IF = $DEFAULT_IF" >&2
+echo "  MGMT_IP    = $MGMT_IP" >&2
 echo "---------------------------------------------------" >&2
 
 # Output key=value pairs on stdout (parsed by sparkrun)
@@ -123,3 +125,4 @@ echo "DETECTED_SOCKET_IFNAME=$DEFAULT_IF"
 echo "DETECTED_NET_LIST=$NET_LIST"
 echo "DETECTED_UCX_LIST=$UCX_LIST"
 echo "DETECTED_IB_IPS=$IB_IP_LIST"
+echo "DETECTED_MGMT_IP=$MGMT_IP"

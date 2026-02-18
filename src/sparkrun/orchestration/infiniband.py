@@ -25,9 +25,15 @@ class IBDetectionResult:
 
     nccl_env: dict[str, str] = field(default_factory=dict)
     ib_ip_map: dict[str, str] = field(default_factory=dict)
-    """Mapping of management host → first IB interface IP.
+    """Mapping of queried host → first IB interface IP.
 
     Empty for hosts where no IB was detected or no IB IP was found.
+    """
+    mgmt_ip_map: dict[str, str] = field(default_factory=dict)
+    """Mapping of queried host → management interface IP.
+
+    Useful when clusters are defined by IB IPs: lets callers
+    display the management IP alongside the IB address.
     """
 
 
@@ -163,6 +169,7 @@ def detect_ib_for_hosts(
 
     nccl_env: dict[str, str] = {}
     ib_ip_map: dict[str, str] = {}
+    mgmt_ip_map: dict[str, str] = {}
 
     for result in ib_results:
         if not result.success:
@@ -181,6 +188,12 @@ def detect_ib_for_hosts(
             ib_ip_map[result.host] = ib_ips[0]
             logger.debug("  %s IB transfer IP: %s", result.host, ib_ips[0])
 
+        # Management IP (from default route interface)
+        mgmt_ip = ib_info.get("DETECTED_MGMT_IP", "").strip()
+        if mgmt_ip:
+            mgmt_ip_map[result.host] = mgmt_ip
+            logger.debug("  %s mgmt IP: %s", result.host, mgmt_ip)
+
     if not nccl_env:
         logger.info("  No InfiniBand detected, using default networking")
 
@@ -190,4 +203,4 @@ def detect_ib_for_hosts(
     else:
         logger.info("  No IB IPs found, transfers will use management network")
 
-    return IBDetectionResult(nccl_env=nccl_env, ib_ip_map=ib_ip_map)
+    return IBDetectionResult(nccl_env=nccl_env, ib_ip_map=ib_ip_map, mgmt_ip_map=mgmt_ip_map)

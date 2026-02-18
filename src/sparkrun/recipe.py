@@ -421,6 +421,12 @@ def list_recipes(search_paths: list[Path] | None = None,
                         "path": str(f),
                         "runtime": _effective_runtime(data) if isinstance(data, dict) else "unknown",
                     }
+                    if isinstance(data, dict):
+                        entry["min_nodes"] = data.get("min_nodes", 1)
+                        defaults = data.get("defaults", {})
+                        if isinstance(defaults, dict):
+                            entry["tp"] = defaults.get("tensor_parallel", "")
+                            entry["gpu_mem"] = defaults.get("gpu_memory_utilization", "")
                     if registry_name:
                         entry["registry"] = registry_name
                     recipes.append(entry)

@@ -380,12 +380,21 @@ def run(
     nccl_env = None
     effective_cache_dir = cache_dir or str(config.hf_cache_dir)
     if not runtime.is_delegating_runtime():
-        nccl_env = _distribute_resources(
+        nccl_env, ib_ip_map, mgmt_ip_map = _distribute_resources(
             container_image, recipe.model, host_list,
             effective_cache_dir,
             config, dry_run, skip_ib,
             model_revision=recipe.model_revision,
+            recipe_name=recipe.name,
         )
+        # Re-save job metadata with IP maps from IB detection
+        if not dry_run and (ib_ip_map or mgmt_ip_map):
+            try:
+                save_job_metadata(cluster_id, recipe, host_list,
+                                  overrides=overrides, cache_dir=str(config.cache_dir),
+                                  ib_ip_map=ib_ip_map, mgmt_ip_map=mgmt_ip_map)
+            except Exception:
+                pass
 
     # For GGUF models that were pre-synced, resolve the container-internal
     # cache path and inject it as the ``model`` override so the recipe
@@ -1420,6 +1429,24 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
         stop_cmd = f"sparkrun stop {recipe_name}{host_flag}{tp_flag}"
         return logs_cmd, stop_cmd
 
+    def _host_display(host, meta):
+        """Format host with complementary IP from job metadata if available.
+
+        If the queried host matches a mgmt or IB IP in the metadata,
+        show the other IP in parentheses so both are visible.
+        """
+        mgmt_map = meta.get("mgmt_ip_map", {}) if meta else {}
+        ib_map = meta.get("ib_ip_map", {}) if meta else {}
+        # Check if this host has a known mgmt IP (host was queried via IB)
+        mgmt = mgmt_map.get(host)
+        if mgmt and mgmt != host:
+            return f"{host} (mgmt: {mgmt})"
+        # Check if this host has a known IB IP (host was queried via mgmt)
+        ib = ib_map.get(host)
+        if ib and ib != host:
+            return f"{host} (ib: {ib})"
+        return host
+
     # Display grouped clusters
     total_containers = 0
     if groups:
@@ -1427,7 +1454,8 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
             meta = _job_meta(cid)
             click.echo(f"Job: {_job_label(meta, cid)}  ({len(members)} container(s))")
             for host, role, status, image in members:
-                click.echo(f"  {role:<10s} {host:<25s} {status:<25s} {image}")
+                hdisp = _host_display(host, meta)
+                click.echo(f"  {role:<10s} {hdisp:<40s} {status:<25s} {image}")
                 total_containers += 1
             logs_cmd, stop_cmd = _job_commands(meta)
             if logs_cmd:
@@ -1440,7 +1468,8 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
         for host, name, status, image in solo_entries:
             cid = name.removesuffix("_solo")
             meta = _job_meta(cid)
-            click.echo(f"  {_job_label(meta, cid):<40s} {host:<25s} {status:<25s} {image}")
+            hdisp = _host_display(host, meta)
+            click.echo(f"  {_job_label(meta, cid):<40s} {hdisp:<40s} {status:<25s} {image}")
             logs_cmd, stop_cmd = _job_commands(meta)
             if logs_cmd:
                 click.echo(f"    logs: {logs_cmd}")
@@ -1461,8 +1490,40 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
             click.echo(f"  {h}")
         click.echo()
 
-    if total_containers == 0 and not errors:
+    # Show pending operations (downloads/distributions in progress)
+    from sparkrun.pending_ops import list_pending_ops
+
+    pending = list_pending_ops(cache_dir=str(config.cache_dir))
+    # Filter to ops that overlap with the hosts we're querying
+    host_set = set(host_list)
+    relevant = [
+        op for op in pending
+        if not op.get("hosts") or host_set & set(op["hosts"])
+    ]
+    if relevant:
+        click.echo("Pending operations (downloads/distributions in progress):")
+        for op in relevant:
+            elapsed = op.get("elapsed_seconds", 0)
+            mins, secs = divmod(int(elapsed), 60)
+            elapsed_str = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+            label = op.get("recipe") or op.get("cluster_id", "?")
+            detail = op.get("operation", "unknown").replace("_", " ")
+            extra = ""
+            if op.get("model") and "model" in detail:
+                extra = f"  model={op['model']}"
+            elif op.get("image") and "image" in detail:
+                extra = f"  image={op['image']}"
+            click.echo(f"  {label}: {detail} ({elapsed_str}){extra}")
+        click.echo()
+        click.echo(
+            "  Note: pending operations will consume VRAM once launched."
+        )
+        click.echo()
+
+    if total_containers == 0 and not errors and not relevant:
         click.echo("No sparkrun containers running.")
+    elif total_containers == 0 and not errors and relevant:
+        click.echo("No sparkrun containers running yet (pending operations above).")
     else:
         click.echo(f"Total: {total_containers} container(s) across {len(host_list)} host(s)")
 
@@ -1500,15 +1561,21 @@ def recipe_list(ctx, registry, query, config_path=None):
 
     # Compute column widths from data
     reg_names = [r.get("registry", "local") for r in recipes]
+    tp_vals = [str(r["tp"]) if r.get("tp", "") != "" else "-" for r in recipes]
+    mn_vals = [str(r.get("min_nodes", 1)) for r in recipes]
+    gm_vals = [str(r["gpu_mem"]) if r.get("gpu_mem", "") != "" else "-" for r in recipes]
     w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
     w_rt = max(len("Runtime"), *(len(r["runtime"]) for r in recipes)) + 2
+    w_tp = max(len("TP"), *(len(v) for v in tp_vals)) + 2
+    w_mn = max(len("Nodes"), *(len(v) for v in mn_vals)) + 2
+    w_gm = max(len("GPU Mem"), *(len(v) for v in gm_vals)) + 2
     w_reg = max(len("Registry"), *(len(n) for n in reg_names)) + 2
     w_file = max(len("File"), *(len(r["file"]) for r in recipes))
 
-    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'Registry':<{w_reg}} {'File':<{w_file}}")
-    click.echo("-" * (w_name + w_rt + w_reg + w_file + 3))
-    for r, reg_name in zip(recipes, reg_names):
-        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {reg_name:<{w_reg}} {r['file']:<{w_file}}")
+    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'TP':<{w_tp}} {'Nodes':<{w_mn}} {'GPU Mem':<{w_gm}} {'Registry':<{w_reg}} {'File':<{w_file}}")
+    click.echo("-" * (w_name + w_rt + w_tp + w_mn + w_gm + w_reg + w_file + 6))
+    for r, reg_name, tp, mn, gm in zip(recipes, reg_names, tp_vals, mn_vals, gm_vals):
+        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {tp:<{w_tp}} {mn:<{w_mn}} {gm:<{w_gm}} {reg_name:<{w_reg}} {r['file']:<{w_file}}")
 
 
 @recipe.command("search")
@@ -1529,15 +1596,21 @@ def recipe_search(ctx, query, config_path=None, ):
     # Compute column widths from data
     models = [r.get("model", "") for r in recipes]
     reg_names = [r.get("registry", "local") for r in recipes]
+    tp_vals = [str(r["tp"]) if r.get("tp", "") != "" else "-" for r in recipes]
+    mn_vals = [str(r.get("min_nodes", 1)) for r in recipes]
+    gm_vals = [str(r["gpu_mem"]) if r.get("gpu_mem", "") != "" else "-" for r in recipes]
     w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
     w_rt = max(len("Runtime"), *(len(r["runtime"]) for r in recipes)) + 2
+    w_tp = max(len("TP"), *(len(v) for v in tp_vals)) + 2
+    w_mn = max(len("Nodes"), *(len(v) for v in mn_vals)) + 2
+    w_gm = max(len("GPU Mem"), *(len(v) for v in gm_vals)) + 2
     w_model = max(len("Model"), *(len(m) for m in models)) + 2
     w_reg = max(len("Registry"), *(len(n) for n in reg_names))
 
-    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'Model':<{w_model}} {'Registry':<{w_reg}}")
-    click.echo("-" * (w_name + w_rt + w_model + w_reg + 3))
-    for r, model, reg_name in zip(recipes, models, reg_names):
-        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {model:<{w_model}} {reg_name:<{w_reg}}")
+    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'TP':<{w_tp}} {'Nodes':<{w_mn}} {'GPU Mem':<{w_gm}} {'Model':<{w_model}} {'Registry':<{w_reg}}")
+    click.echo("-" * (w_name + w_rt + w_tp + w_mn + w_gm + w_model + w_reg + 6))
+    for r, model, reg_name, tp, mn, gm in zip(recipes, models, reg_names, tp_vals, mn_vals, gm_vals):
+        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {tp:<{w_tp}} {mn:<{w_mn}} {gm:<{w_gm}} {model:<{w_model}} {reg_name:<{w_reg}}")
 
 
 @recipe.command("show")
@@ -1756,7 +1829,8 @@ def _distribute_resources(
         dry_run: bool,
         skip_ib: bool,
         model_revision: str | None = None,
-) -> dict[str, str] | None:
+        recipe_name: str = "",
+) -> tuple[dict[str, str] | None, dict[str, str], dict[str, str]]:
     """Detect IB, distribute container image and model to target hosts.
 
     Performs InfiniBand detection (for both NCCL env and IB transfer IPs),
@@ -1774,12 +1848,11 @@ def _distribute_resources(
         dry_run: Show what would be done without executing.
         skip_ib: Skip InfiniBand detection.
         model_revision: Optional HuggingFace model revision to pin.
+        recipe_name: Recipe name for pending-op lock display.
 
     Returns:
-        Pre-detected NCCL environment dict, or ``None`` if IB detection
-        was skipped or not applicable (localhost).  The caller should
-        pass this to ``runtime.run(nccl_env=...)`` to avoid redundant
-        IB detection.
+        Tuple of (nccl_env, ib_ip_map, mgmt_ip_map).  ``nccl_env`` is
+        ``None`` when IB detection was skipped or not applicable.
     """
     from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts
@@ -1787,6 +1860,22 @@ def _distribute_resources(
     from sparkrun.containers.registry import ensure_image
     from sparkrun.models.distribute import distribute_model_from_local
     from sparkrun.models.download import download_model
+    from sparkrun.pending_ops import pending_op
+
+    # Common kwargs for pending-op lock files
+    _pop_kw = dict(
+        recipe=recipe_name,
+        model=model, image=image,
+        hosts=host_list, cache_dir=str(config.cache_dir),
+    )
+    # Derive a cluster_id-ish key for the lock files.  The real cluster_id
+    # is generated earlier in run(); we receive the image+model+hosts here
+    # so we hash the same inputs to keep the lock name stable.
+    import hashlib
+    _lock_key = hashlib.sha256(
+        f"{image}|{model}|{','.join(host_list)}".encode()
+    ).hexdigest()[:12]
+    _lock_id = f"sparkrun_{_lock_key}"
 
     is_local = (
             len(host_list) <= 1
@@ -1795,15 +1884,19 @@ def _distribute_resources(
 
     if is_local:
         # Local-only: just ensure image and model exist, no SSH needed
-        click.echo("Ensuring container image is available locally...")
-        ensure_image(image, dry_run=dry_run)
+        with pending_op(_lock_id, "image_pull", **_pop_kw):
+            click.echo("Ensuring container image is available locally...")
+            ensure_image(image, dry_run=dry_run)
         if model:
-            click.echo(f"Ensuring model {model} is available locally...")
-            download_model(model, cache_dir=cache_dir, revision=model_revision, dry_run=dry_run)
-        return None  # let runtime handle its own local IB detection
+            with pending_op(_lock_id, "model_download", **_pop_kw):
+                click.echo(f"Ensuring model {model} is available locally...")
+                download_model(model, cache_dir=cache_dir, revision=model_revision, dry_run=dry_run)
+        return None, {}, {}  # let runtime handle its own local IB detection
 
     ssh_kwargs = build_ssh_kwargs(config)
     nccl_env: dict[str, str] = {}
+    ib_ip_map: dict[str, str] = {}
+    mgmt_ip_map: dict[str, str] = {}
     transfer_hosts: list[str] | None = None
 
     # Step 1: Detect InfiniBand for NCCL env + transfer routing
@@ -1813,6 +1906,8 @@ def _distribute_resources(
             host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
         )
         nccl_env = ib_result.nccl_env
+        ib_ip_map = ib_result.ib_ip_map
+        mgmt_ip_map = ib_result.mgmt_ip_map
         if ib_result.ib_ip_map:
             transfer_hosts = [
                 ib_result.ib_ip_map.get(h, h) for h in host_list
@@ -1824,11 +1919,12 @@ def _distribute_resources(
 
     # Step 2: Distribute container image
     # click.echo(f"Distributing image to {len(host_list)} host(s)...")
-    img_failed = distribute_image_from_local(
-        image, host_list,
-        transfer_hosts=transfer_hosts,
-        dry_run=dry_run, **ssh_kwargs,
-    )
+    with pending_op(_lock_id, "image_distribute", **_pop_kw):
+        img_failed = distribute_image_from_local(
+            image, host_list,
+            transfer_hosts=transfer_hosts,
+            dry_run=dry_run, **ssh_kwargs,
+        )
     if img_failed:
         click.echo(
             "Warning: Image distribution failed on: %s" % ", ".join(img_failed),
@@ -1837,13 +1933,14 @@ def _distribute_resources(
 
     # Step 3: Distribute model
     if model:
-        mdl_failed = distribute_model_from_local(
-            model, host_list,
-            cache_dir=cache_dir,
-            revision=model_revision,
-            transfer_hosts=transfer_hosts,
-            dry_run=dry_run, **ssh_kwargs,
-        )
+        with pending_op(_lock_id, "model_download", **_pop_kw):
+            mdl_failed = distribute_model_from_local(
+                model, host_list,
+                cache_dir=cache_dir,
+                revision=model_revision,
+                transfer_hosts=transfer_hosts,
+                dry_run=dry_run, **ssh_kwargs,
+            )
         if mdl_failed:
             click.echo(
                 "Warning: Model distribution failed on: %s" % ", ".join(mdl_failed),
@@ -1852,4 +1949,4 @@ def _distribute_resources(
 
     click.echo("Distribution complete.")
     click.echo()
-    return nccl_env
+    return nccl_env, ib_ip_map, mgmt_ip_map

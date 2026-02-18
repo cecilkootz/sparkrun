@@ -20,7 +20,7 @@ Stop a running inference workload.
 
 When this command is invoked:
 
-1. If no recipe is specified, run `sparkrun status` first to see what's running and ask the user which job to stop.
+1. If no recipe is specified, run `sparkrun cluster status` first to see what's running and ask the user which job to stop.
 2. Stop the workload:
 
 ```bash

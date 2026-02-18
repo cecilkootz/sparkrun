@@ -20,7 +20,7 @@ Run an inference workload on DGX Spark using a sparkrun recipe.
 
 When this command is invoked:
 
-1. If no recipe is specified, run `sparkrun list` to show available recipes and ask the user to pick one.
+1. If no recipe is specified, run `sparkrun list` to show available recipes. If the user describes what they're looking for, use `sparkrun recipe search <query>` to find matching recipes. Ask the user to pick one.
 2. Determine the target hosts:
    - If the user specifies `--hosts`, `--cluster`, or `--solo`, use those.
    - Otherwise check if a default cluster is configured (`sparkrun cluster default`).
@@ -32,9 +32,9 @@ When this command is invoked:
 sparkrun run <recipe> [options] --no-follow
 ```
 
-**CRITICAL: Always use `--no-follow`** to avoid blocking on log streaming. After launch, use `sparkrun status` or `sparkrun logs` separately.
+**CRITICAL: Always use `--no-follow`** to avoid blocking on log streaming. After launch, use `sparkrun cluster status` or `sparkrun logs` separately.
 
-5. After launching, run `sparkrun status` to confirm containers are running.
+5. After launching, run `sparkrun cluster status` to confirm containers are running.
 
 ## Common Options
 

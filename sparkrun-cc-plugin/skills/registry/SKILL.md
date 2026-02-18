@@ -41,16 +41,17 @@ sparkrun recipe update
 ## Browsing Recipes
 
 ```bash
-# List all recipes across all registries
+# List all recipes across all registries (no filter)
 sparkrun list
-sparkrun list <query>
 
-# Search by name, model, runtime, or description
-sparkrun search <query>
+# Search for recipes by name, model, runtime, or description (contains-match)
+sparkrun recipe search <query>
 
-# Show full recipe details + VRAM estimation
-sparkrun show <recipe> [--tp N]
+# Inspect a specific known recipe (by exact name or file path)
+sparkrun recipe show <recipe> [--tp N]
 ```
+
+Use `sparkrun recipe search` as the first attempt when looking for a particular recipe. Use `sparkrun recipe show` when given a specific recipe name or file -- it may not appear in search results.
 
 ## Validating Recipes
 

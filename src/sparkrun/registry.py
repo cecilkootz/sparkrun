@@ -403,6 +403,7 @@ class RegistryManager:
                 data = read_yaml(str(f))
                 if not isinstance(data, dict):
                     continue
+                defaults = data.get("defaults", {})
                 recipes.append({
                     "name": data.get("name", stem),
                     "file": stem,
@@ -411,6 +412,9 @@ class RegistryManager:
                     "description": data.get("description", ""),
                     "runtime": _effective_runtime(data),
                     "registry": registry_name,
+                    "min_nodes": data.get("min_nodes", 1),
+                    "tp": defaults.get("tensor_parallel", "") if isinstance(defaults, dict) else "",
+                    "gpu_mem": defaults.get("gpu_memory_utilization", "") if isinstance(defaults, dict) else "",
                 })
             except Exception:
                 logger.debug("Skipping invalid recipe file: %s", f)

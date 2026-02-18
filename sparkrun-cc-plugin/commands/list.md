@@ -20,24 +20,30 @@ Browse and search available inference recipes.
 
 When this command is invoked:
 
-1. List or search recipes:
+1. **Browse all recipes** (no filter):
 
 ```bash
-# List all recipes
 sparkrun list
-
-# Search by name, model, runtime, or description
-sparkrun list <query>
 ```
 
-2. If the user wants details on a specific recipe:
+2. **Search for recipes** by name, model, runtime, or description (contains-match):
 
 ```bash
-sparkrun show <recipe>
-sparkrun show <recipe> --tp <N>   # include VRAM estimate for N nodes
+sparkrun recipe search <query>
 ```
 
-3. If the user wants to validate or check VRAM for a recipe:
+Use `sparkrun recipe search` as the first attempt when the user wants to find a particular recipe. Only fall back to other approaches if it doesn't return useful results.
+
+3. **Inspect a specific recipe** (by exact name or recipe file):
+
+```bash
+sparkrun recipe show <recipe>
+sparkrun recipe show <recipe> --tp <N>   # include VRAM estimate for N nodes
+```
+
+Use `sparkrun recipe show` when given a specific recipe name or file path -- these may not appear in search results.
+
+4. If the user wants to validate or check VRAM for a recipe:
 
 ```bash
 sparkrun recipe validate <recipe>
@@ -49,3 +55,4 @@ sparkrun recipe vram <recipe> --tp <N>
 - Recipes come from built-in and custom registries
 - Run `sparkrun recipe update` to fetch the latest recipes from remote registries
 - Use `sparkrun recipe registries` to see configured registries
+- `sparkrun list` shows everything; `sparkrun recipe search` filters by query; `sparkrun recipe show` inspects a known recipe
