@@ -28,7 +28,8 @@ _DTYPE_BYTES: dict[str, float] = {
     "mxfp4": 0.5,
     # TODO: GGUF quants
     'q3_k_m': 0.4,
-    'q4_k_m': 0.5,
+    'q4_k_m': 0.608,
+    'q6_k': 0.823,
     'q8_0': 1.0,
 }
 
