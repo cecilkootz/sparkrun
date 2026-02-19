@@ -106,6 +106,73 @@ def _apply_tp_trimming(
     return trimmed
 
 
+def _get_cluster_manager(v=None):
+    """Create a ClusterManager using the SAF config root."""
+    from sparkrun.cluster_manager import ClusterManager
+    from sparkrun.config import get_config_root
+    # TODO: switch to leveraging scitrera-app-framework plugin for ClusterManager singleton?
+    return ClusterManager(get_config_root(v))
+
+
+def _load_recipe(config, recipe_name):
+    """Find, load, and return a recipe.
+
+    Exits with an error message on failure.
+
+    Returns:
+        Tuple of (recipe, recipe_path, registry_mgr).
+    """
+    from sparkrun.recipe import Recipe, find_recipe, RecipeError
+    try:
+        registry_mgr = config.get_registry_manager()
+        registry_mgr.ensure_initialized()
+        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
+        recipe = Recipe.load(recipe_path)
+    except RecipeError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+    return recipe, recipe_path, registry_mgr
+
+
+def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None):
+    """Resolve hosts from CLI args; exit if none are found.
+
+    Returns:
+        Tuple of (host_list, cluster_mgr).
+    """
+    from sparkrun.hosts import resolve_hosts
+    cluster_mgr = _get_cluster_manager(v)
+    host_list = resolve_hosts(
+        hosts=hosts,
+        hosts_file=hosts_file,
+        cluster_name=cluster_name,
+        cluster_manager=cluster_mgr,
+        config_default_hosts=config.default_hosts,
+    )
+    if not host_list:
+        click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
+        sys.exit(1)
+    return host_list, cluster_mgr
+
+
+def _shell_rc_file(shell):
+    """Return the RC file path for a given shell name.
+
+    Exits with an error for unsupported shells.
+    """
+    from pathlib import Path
+    home = Path.home()
+    rc_files = {
+        "bash": home / ".bashrc",
+        "zsh": home / ".zshrc",
+        "fish": home / ".config" / "fish" / "config.fish",
+    }
+    if shell not in rc_files:
+        click.echo("Error: Unsupported shell: %s" % shell, err=True)
+        sys.exit(1)
+    return rc_files[shell]
+
+
 class RecipeNameType(click.ParamType):
     """Click parameter type with shell completion for recipe names."""
 
@@ -138,9 +205,7 @@ class ClusterNameType(click.ParamType):
     def shell_complete(self, ctx, param, incomplete):
         """Return completion items for cluster names."""
         try:
-            from sparkrun.cluster_manager import ClusterManager
-            from sparkrun.config import get_config_root
-            mgr = ClusterManager(get_config_root())
+            mgr = _get_cluster_manager()
             clusters = mgr.list_clusters()
             return [
                 click.shell_completion.CompletionItem(c.name)
@@ -152,6 +217,51 @@ class ClusterNameType(click.ParamType):
 
 
 CLUSTER_NAME = ClusterNameType()
+
+
+class RegistryNameType(click.ParamType):
+    """Click parameter type with shell completion for registry names."""
+
+    name = "registry"
+
+    def shell_complete(self, ctx, param, incomplete):
+        """Return completion items for registry names."""
+        try:
+            _, registry_mgr = _get_config_and_registry()
+            return [
+                click.shell_completion.CompletionItem(reg.name)
+                for reg in registry_mgr.list_registries()
+                if reg.enabled and reg.name.startswith(incomplete)
+            ]
+        except Exception:
+            return []
+
+
+REGISTRY_NAME = RegistryNameType()
+
+
+class RuntimeNameType(click.ParamType):
+    """Click parameter type with shell completion for runtime names."""
+
+    name = "runtime"
+
+    def shell_complete(self, ctx, param, incomplete):
+        """Return completion items for known runtimes."""
+        try:
+            from sparkrun.recipe import list_recipes
+            _, registry_mgr = _get_config_and_registry()
+            recipes = list_recipes(registry_manager=registry_mgr)
+            runtimes = sorted({r.get("runtime", "") for r in recipes if r.get("runtime")})
+            return [
+                click.shell_completion.CompletionItem(rt)
+                for rt in runtimes
+                if rt.startswith(incomplete)
+            ]
+        except Exception:
+            return []
+
+
+RUNTIME_NAME = RuntimeNameType()
 
 
 # TODO: converge logging with SAF logging
@@ -241,7 +351,6 @@ def run(
       sparkrun run my-recipe.yaml -o attention_backend=triton -o max_model_len=4096
     """
     from sparkrun.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
     from sparkrun.config import SparkrunConfig
 
     v = init_sparkrun()
@@ -250,14 +359,7 @@ def run(
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     # Find and load recipe
-    try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     # Validate recipe
     issues = recipe.validate()
@@ -291,10 +393,8 @@ def run(
 
     # Determine hosts
     from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
 
-    cluster_mgr = ClusterManager(get_config_root(v))
+    cluster_mgr = _get_cluster_manager(v)
     host_list = resolve_hosts(
         hosts=hosts,
         hosts_file=hosts_file,
@@ -378,9 +478,11 @@ def run(
     # Always runs for non-delegating runtimes (hash checks make it cheap
     # when resources are already present on all hosts).
     nccl_env = None
+    ib_ip_map: dict[str, str] = {}
     effective_cache_dir = cache_dir or str(config.hf_cache_dir)
     if not runtime.is_delegating_runtime():
-        nccl_env, ib_ip_map, mgmt_ip_map = _distribute_resources(
+        from sparkrun.orchestration.distribution import distribute_resources
+        nccl_env, ib_ip_map, mgmt_ip_map = distribute_resources(
             container_image, recipe.model, host_list,
             effective_cache_dir,
             config, dry_run, skip_ib,
@@ -464,6 +566,7 @@ def run(
         detached=not foreground,
         skip_ib_detect=nccl_env is not None or skip_ib,
         nccl_env=nccl_env,
+        ib_ip_map=ib_ip_map,
         ray_port=ray_port,
         dashboard_port=dashboard_port,
         dashboard=dashboard,
@@ -483,12 +586,13 @@ def run(
 
 
 @main.command("list")
-@click.option("--registry", default=None, help="Filter by registry name")
+@click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
+@click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
 @click.argument("query", required=False)
 @click.pass_context
-def list_cmd(ctx, registry, query):
+def list_cmd(ctx, registry, runtime, query):
     """List available recipes (alias for 'recipe list')."""
-    ctx.invoke(recipe_list, registry=registry, query=query)
+    ctx.invoke(recipe_list, registry=registry, runtime=runtime, query=query)
 
 
 def _display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overrides=None):
@@ -580,11 +684,13 @@ def show(ctx, recipe_name, no_vram, tensor_parallel):
 
 
 @main.command("search")
+@click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
+@click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
 @click.argument("query")
 @click.pass_context
-def search_cmd(ctx, query):
+def search_cmd(ctx, registry, runtime, query):
     """Search for recipes by name, model, or description (alias for 'recipe search')."""
-    ctx.invoke(recipe_search, query=query)
+    ctx.invoke(recipe_search, registry=registry, runtime=runtime, query=query)
 
 
 @main.command("status")
@@ -626,21 +732,10 @@ def setup_completion(ctx, shell):
 
       sparkrun setup completion --shell bash
     """
-    from pathlib import Path
-
     if not shell:
         shell, rc_file = _detect_shell()
     else:
-        home = Path.home()
-        if shell == "bash":
-            rc_file = home / ".bashrc"
-        elif shell == "zsh":
-            rc_file = home / ".zshrc"
-        elif shell == "fish":
-            rc_file = home / ".config" / "fish" / "config.fish"
-        else:
-            click.echo("Error: Unsupported shell: %s" % shell, err=True)
-            sys.exit(1)
+        rc_file = _shell_rc_file(shell)
 
     completion_var = "_SPARKRUN_COMPLETE"
 
@@ -706,16 +801,7 @@ def setup_install(ctx, shell):
     if not shell:
         shell, rc_file = _detect_shell()
     else:
-        home = Path.home()
-        if shell == "bash":
-            rc_file = home / ".bashrc"
-        elif shell == "zsh":
-            rc_file = home / ".zshrc"
-        elif shell == "fish":
-            rc_file = home / ".config" / "fish" / "config.fish"
-        else:
-            click.echo("Error: Unsupported shell: %s" % shell, err=True)
-            sys.exit(1)
+        rc_file = _shell_rc_file(shell)
 
     # Step 1: Install sparkrun via uv tool
     uv = _require_uv()
@@ -852,13 +938,12 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     import subprocess
 
     from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import SparkrunConfig, get_config_root
+    from sparkrun.config import SparkrunConfig
 
     config = SparkrunConfig()
 
     # Resolve hosts and look up cluster user if applicable
-    cluster_mgr = ClusterManager(get_config_root())
+    cluster_mgr = _get_cluster_manager()
     host_list = resolve_hosts(
         hosts=hosts,
         hosts_file=hosts_file,
@@ -960,31 +1045,12 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, dry_run
       sparkrun stop glm-4.7-flash-awq --cluster mylab
     """
     from sparkrun.config import SparkrunConfig
-    from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
-
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     # Load recipe for cluster_id derivation
-    try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
-    cluster_mgr = ClusterManager(get_config_root())
-    host_list = resolve_hosts(
-        hosts=hosts,
-        hosts_file=hosts_file,
-        cluster_name=cluster_name,
-        cluster_manager=cluster_mgr,
-        config_default_hosts=config.default_hosts,
-    )
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
 
     if not host_list:
         click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
@@ -1010,7 +1076,8 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, dry_run
     for rank in range(len(host_list)):
         container_names.append("%s_node_%d" % (cluster_id, rank))
 
-    is_local = len(host_list) == 1 and host_list[0] in ("localhost", "127.0.0.1", "")
+    from sparkrun.hosts import is_local_host
+    is_local = len(host_list) == 1 and is_local_host(host_list[0])
     if is_local:
         cleanup_containers_local(container_names, dry_run=dry_run)
     else:
@@ -1042,10 +1109,6 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
     """
     from sparkrun.bootstrap import init_sparkrun, get_runtime
     from sparkrun.config import SparkrunConfig
-    from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
     from sparkrun.orchestration.docker import generate_cluster_id
 
     v = init_sparkrun()
@@ -1053,28 +1116,10 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     # Load recipe
-    try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     # Resolve hosts
-    cluster_mgr = ClusterManager(get_config_root(v))
-    host_list = resolve_hosts(
-        hosts=hosts,
-        hosts_file=hosts_file,
-        cluster_name=cluster_name,
-        cluster_manager=cluster_mgr,
-        config_default_hosts=config.default_hosts,
-    )
-
-    if not host_list:
-        click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
-        sys.exit(1)
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
     # Apply TP-based host trimming to match what 'run' used for cluster_id
     host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
@@ -1112,8 +1157,7 @@ def cluster(ctx):
 @click.pass_context
 def cluster_create(ctx, name, hosts, hosts_file, description, user):
     """Create a new named cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
     from sparkrun.hosts import parse_hosts_file
 
     host_list = [h.strip() for h in hosts.split(",") if h.strip()] if hosts else []
@@ -1124,7 +1168,7 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user):
         click.echo("Error: No hosts provided.", err=True)
         sys.exit(1)
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     try:
         mgr.create(name, host_list, description, user=user)
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
@@ -1142,8 +1186,7 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user):
 @click.pass_context
 def cluster_update(ctx, name, hosts, hosts_file, description, user):
     """Update an existing cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
     from sparkrun.hosts import parse_hosts_file
 
     host_list = None
@@ -1156,7 +1199,7 @@ def cluster_update(ctx, name, hosts, hosts_file, description, user):
         click.echo("Error: Nothing to update. Provide --hosts, --hosts-file, -d, or --user.", err=True)
         sys.exit(1)
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     try:
         mgr.update(name, hosts=host_list, description=description, user=user)
         click.echo(f"Cluster '{name}' updated.")
@@ -1169,10 +1212,7 @@ def cluster_update(ctx, name, hosts, hosts_file, description, user):
 @click.pass_context
 def cluster_list(ctx):
     """List all saved clusters."""
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     clusters = mgr.list_clusters()
     default_name = mgr.get_default()
 
@@ -1203,10 +1243,9 @@ def cluster_list(ctx):
 @click.pass_context
 def cluster_show(ctx, name):
     """Show details of a saved cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     try:
         c = mgr.get(name)
     except ClusterError as e:
@@ -1230,10 +1269,9 @@ def cluster_show(ctx, name):
 @click.pass_context
 def cluster_delete(ctx, name, force):
     """Delete a saved cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
 
     if not force:
         click.confirm(f"Delete cluster '{name}'?", abort=True)
@@ -1251,10 +1289,9 @@ def cluster_delete(ctx, name, force):
 @click.pass_context
 def cluster_set_default(ctx, name):
     """Set the default cluster."""
-    from sparkrun.cluster_manager import ClusterManager, ClusterError
-    from sparkrun.config import get_config_root
+    from sparkrun.cluster_manager import ClusterError
 
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     try:
         mgr.set_default(name)
         click.echo(f"Default cluster set to '{name}'.")
@@ -1267,10 +1304,7 @@ def cluster_set_default(ctx, name):
 @click.pass_context
 def cluster_unset_default(ctx):
     """Remove the default cluster setting."""
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     mgr.unset_default()
     click.echo("Default cluster unset.")
 
@@ -1279,10 +1313,7 @@ def cluster_unset_default(ctx):
 @click.pass_context
 def cluster_default(ctx):
     """Show the current default cluster."""
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.config import get_config_root
-
-    mgr = ClusterManager(get_config_root())
+    mgr = _get_cluster_manager()
     default_name = mgr.get_default()
     if not default_name:
         click.echo("No default cluster set.")
@@ -1315,194 +1346,77 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
 
       sparkrun cluster status --cluster mylab
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from sparkrun.config import SparkrunConfig, get_config_root
-    from sparkrun.hosts import resolve_hosts
-    from sparkrun.cluster_manager import ClusterManager
-    from sparkrun.orchestration.ssh import run_remote_command
+    from sparkrun.config import SparkrunConfig
+    from sparkrun.cluster_manager import (
+        query_cluster_status,
+        format_job_label, format_job_commands, format_host_display,
+    )
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
-    cluster_mgr = ClusterManager(get_config_root())
-
-    host_list = resolve_hosts(
-        hosts=hosts,
-        hosts_file=hosts_file,
-        cluster_name=cluster_name,
-        cluster_manager=cluster_mgr,
-        config_default_hosts=config.default_hosts,
-    )
-    if not host_list:
-        click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
-        sys.exit(1)
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
 
     ssh_kwargs = build_ssh_kwargs(config)
-    docker_cmd = (
-        "docker ps --filter 'name=sparkrun_' "
-        "--format '{{.Names}}\\t{{.Status}}\\t{{.Image}}'"
-    )
 
     if dry_run:
+        docker_cmd = (
+            "docker ps --filter 'name=sparkrun_' "
+            "--format '{{.Names}}\\t{{.Status}}\\t{{.Image}}'"
+        )
         click.echo("[dry-run] Would run on %d host(s): %s" % (len(host_list), docker_cmd))
         return
 
-    # Query all hosts in parallel
-    with ThreadPoolExecutor(max_workers=len(host_list)) as executor:
-        futures = {
-            executor.submit(
-                run_remote_command, host, docker_cmd, timeout=15, **ssh_kwargs,
-            ): host
-            for host in host_list
-        }
-        results = {}
-        for future in as_completed(futures):
-            host = futures[future]
-            results[host] = future.result()
+    # Query and classify — business logic lives in cluster_manager
+    result = query_cluster_status(
+        host_list, ssh_kwargs=ssh_kwargs,
+        cache_dir=str(config.cache_dir),
+    )
 
-    # Collect per-host container info: list of (name, status, image)
-    host_containers: dict[str, list[tuple[str, str, str]]] = {}
-    errors: dict[str, str] = {}
-    for host in host_list:
-        result = results[host]
-        if not result.success:
-            errors[host] = result.stderr.strip()
-            continue
-        entries = []
-        for line in result.stdout.strip().splitlines():
-            if not line.strip():
-                continue
-            parts = line.split("\t")
-            if len(parts) == 3:
-                entries.append((parts[0], parts[1], parts[2]))
-            else:
-                entries.append((line.strip(), "", ""))
-        host_containers[host] = entries
-
-    # Build cluster groups: cluster_id -> [(host, role, status, image), ...]
-    # Anything ending in _solo is standalone; everything else is grouped
-    # by cluster_id (name up to last underscore-delimited role suffix).
-    groups: dict[str, list[tuple[str, str, str, str]]] = {}  # cluster_id -> entries
-    solo_entries: list[tuple[str, str, str, str]] = []  # (host, name, status, image)
-
-    for host in host_list:
-        for name, status, image in host_containers.get(host, []):
-            if name.endswith("_solo"):
-                solo_entries.append((host, name, status, image))
-            else:
-                # Extract cluster_id by stripping the role suffix.
-                # Patterns: sparkrun_hash_head, sparkrun_hash_worker,
-                #           sparkrun_hash_node_0 (SGLang)
-                # Strategy: find the cluster_id prefix (sparkrun_{12-char hash})
-                # and treat the rest as the role.
-                prefix_end = name.find("_", len("sparkrun_"))
-                if 0 < prefix_end < len(name) - 1:
-                    cluster_id = name[:prefix_end]
-                    role = name[prefix_end + 1:]
-                else:
-                    cluster_id = name
-                    role = "?"
-                groups.setdefault(cluster_id, []).append((host, role, status, image))
-
-    # Load cached job metadata for enriched display
-    from sparkrun.orchestration.docker import load_job_metadata
-
-    def _job_meta(cid):
-        return load_job_metadata(cid, cache_dir=str(config.cache_dir)) or {}
-
-    def _job_label(meta, cid):
-        label = meta.get("recipe", cid)
-        tp = meta.get("tensor_parallel")
-        if tp:
-            label += f"  (tp={tp})"
-        return label
-
-    def _job_commands(meta):
-        """Return (logs_cmd, stop_cmd) strings from cached metadata, or None."""
-        recipe_name = meta.get("recipe")
-        if not recipe_name:
-            return None, None
-        job_hosts = meta.get("hosts", [])
-        tp = meta.get("tensor_parallel")
-        host_flag = f" --hosts {','.join(job_hosts)}" if job_hosts else ""
-        tp_flag = f" --tp {tp}" if tp else ""
-        logs_cmd = f"sparkrun logs {recipe_name}{host_flag}{tp_flag}"
-        stop_cmd = f"sparkrun stop {recipe_name}{host_flag}{tp_flag}"
-        return logs_cmd, stop_cmd
-
-    def _host_display(host, meta):
-        """Format host with complementary IP from job metadata if available.
-
-        If the queried host matches a mgmt or IB IP in the metadata,
-        show the other IP in parentheses so both are visible.
-        """
-        mgmt_map = meta.get("mgmt_ip_map", {}) if meta else {}
-        ib_map = meta.get("ib_ip_map", {}) if meta else {}
-        # Check if this host has a known mgmt IP (host was queried via IB)
-        mgmt = mgmt_map.get(host)
-        if mgmt and mgmt != host:
-            return f"{host} (mgmt: {mgmt})"
-        # Check if this host has a known IB IP (host was queried via mgmt)
-        ib = ib_map.get(host)
-        if ib and ib != host:
-            return f"{host} (ib: {ib})"
-        return host
+    # --- Display rendering ---
 
     # Display grouped clusters
-    total_containers = 0
-    if groups:
-        for cid, members in sorted(groups.items()):
-            meta = _job_meta(cid)
-            click.echo(f"Job: {_job_label(meta, cid)}  ({len(members)} container(s))")
-            for host, role, status, image in members:
-                hdisp = _host_display(host, meta)
+    if result.groups:
+        for cid, group in sorted(result.groups.items()):
+            click.echo(f"Job: {format_job_label(group.meta, cid)}  ({len(group.members)} container(s))")
+            for host, role, status, image in group.members:
+                hdisp = format_host_display(host, group.meta)
                 click.echo(f"  {role:<10s} {hdisp:<40s} {status:<25s} {image}")
-                total_containers += 1
-            logs_cmd, stop_cmd = _job_commands(meta)
+            logs_cmd, stop_cmd = format_job_commands(group.meta)
             if logs_cmd:
                 click.echo(f"  logs: {logs_cmd}")
                 click.echo(f"  stop: {stop_cmd}")
             click.echo()
 
     # Display solo / ungrouped containers
-    if solo_entries:
-        for host, name, status, image in solo_entries:
+    if result.solo_entries:
+        from sparkrun.orchestration.docker import load_job_metadata
+        for host, name, status, image in result.solo_entries:
             cid = name.removesuffix("_solo")
-            meta = _job_meta(cid)
-            hdisp = _host_display(host, meta)
-            click.echo(f"  {_job_label(meta, cid):<40s} {hdisp:<40s} {status:<25s} {image}")
-            logs_cmd, stop_cmd = _job_commands(meta)
+            meta = load_job_metadata(cid, cache_dir=str(config.cache_dir)) or {}
+            hdisp = format_host_display(host, meta)
+            click.echo(f"  {format_job_label(meta, cid):<40s} {hdisp:<40s} {status:<25s} {image}")
+            logs_cmd, stop_cmd = format_job_commands(meta)
             if logs_cmd:
                 click.echo(f"    logs: {logs_cmd}")
                 click.echo(f"    stop: {stop_cmd}")
-            total_containers += 1
         click.echo()
 
     # Display errors
     for host in host_list:
-        if host in errors:
-            click.echo(f"  {host}: Error: {errors[host]}")
+        if host in result.errors:
+            click.echo(f"  {host}: Error: {result.errors[host]}")
 
-    # Display hosts with no containers
-    idle_hosts = [h for h in host_list if h not in errors and not host_containers.get(h)]
-    if idle_hosts:
+    # Display idle hosts
+    if result.idle_hosts:
         click.echo("Idle hosts (no sparkrun containers):")
-        for h in idle_hosts:
+        for h in result.idle_hosts:
             click.echo(f"  {h}")
         click.echo()
 
-    # Show pending operations (downloads/distributions in progress)
-    from sparkrun.pending_ops import list_pending_ops
-
-    pending = list_pending_ops(cache_dir=str(config.cache_dir))
-    # Filter to ops that overlap with the hosts we're querying
-    host_set = set(host_list)
-    relevant = [
-        op for op in pending
-        if not op.get("hosts") or host_set & set(op["hosts"])
-    ]
-    if relevant:
+    # Display pending operations
+    if result.pending_ops:
         click.echo("Pending operations (downloads/distributions in progress):")
-        for op in relevant:
+        for op in result.pending_ops:
             elapsed = op.get("elapsed_seconds", 0)
             mins, secs = divmod(int(elapsed), 60)
             elapsed_str = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
@@ -1520,12 +1434,13 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
         )
         click.echo()
 
-    if total_containers == 0 and not errors and not relevant:
+    # Summary
+    if result.total_containers == 0 and not result.errors and not result.pending_ops:
         click.echo("No sparkrun containers running.")
-    elif total_containers == 0 and not errors and relevant:
+    elif result.total_containers == 0 and not result.errors and result.pending_ops:
         click.echo("No sparkrun containers running yet (pending operations above).")
     else:
-        click.echo(f"Total: {total_containers} container(s) across {len(host_list)} host(s)")
+        click.echo(f"Total: {result.total_containers} container(s) across {result.host_count} host(s)")
 
 
 @main.group()
@@ -1536,13 +1451,14 @@ def recipe(ctx):
 
 
 @recipe.command("list")
-@click.option("--registry", default=None, help="Filter by registry name")
+@click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
+@click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
 @click.argument("query", required=False)
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_list(ctx, registry, query, config_path=None):
+def recipe_list(ctx, registry, runtime, query, config_path=None):
     """List available recipes from all registries."""
-    from sparkrun.recipe import list_recipes
+    from sparkrun.recipe import list_recipes, filter_recipes, format_recipe_table
 
     config, registry_mgr = _get_config_and_registry(config_path)
     registry_mgr.ensure_initialized()
@@ -1552,65 +1468,31 @@ def recipe_list(ctx, registry, query, config_path=None):
     else:
         recipes = list_recipes(config.get_recipe_search_paths(), registry_mgr)
 
-    if registry:
-        recipes = [r for r in recipes if r.get("registry") == registry]
-
-    if not recipes:
-        click.echo("No recipes found.")
-        return
-
-    # Compute column widths from data
-    reg_names = [r.get("registry", "local") for r in recipes]
-    tp_vals = [str(r["tp"]) if r.get("tp", "") != "" else "-" for r in recipes]
-    mn_vals = [str(r.get("min_nodes", 1)) for r in recipes]
-    gm_vals = [str(r["gpu_mem"]) if r.get("gpu_mem", "") != "" else "-" for r in recipes]
-    w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
-    w_rt = max(len("Runtime"), *(len(r["runtime"]) for r in recipes)) + 2
-    w_tp = max(len("TP"), *(len(v) for v in tp_vals)) + 2
-    w_mn = max(len("Nodes"), *(len(v) for v in mn_vals)) + 2
-    w_gm = max(len("GPU Mem"), *(len(v) for v in gm_vals)) + 2
-    w_reg = max(len("Registry"), *(len(n) for n in reg_names)) + 2
-    w_file = max(len("File"), *(len(r["file"]) for r in recipes))
-
-    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'TP':<{w_tp}} {'Nodes':<{w_mn}} {'GPU Mem':<{w_gm}} {'Registry':<{w_reg}} {'File':<{w_file}}")
-    click.echo("-" * (w_name + w_rt + w_tp + w_mn + w_gm + w_reg + w_file + 6))
-    for r, reg_name, tp, mn, gm in zip(recipes, reg_names, tp_vals, mn_vals, gm_vals):
-        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {tp:<{w_tp}} {mn:<{w_mn}} {gm:<{w_gm}} {reg_name:<{w_reg}} {r['file']:<{w_file}}")
+    recipes = filter_recipes(recipes, runtime=runtime, registry=registry)
+    click.echo(format_recipe_table(recipes, show_file=True))
 
 
 @recipe.command("search")
+@click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
+@click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
 @click.argument("query")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_search(ctx, query, config_path=None, ):
+def recipe_search(ctx, registry, runtime, query, config_path=None):
     """Search for recipes by name, model, or description."""
+    from sparkrun.recipe import filter_recipes, format_recipe_table
+
     config, registry_mgr = _get_config_and_registry(config_path)
     registry_mgr.ensure_initialized()
 
     recipes = registry_mgr.search_recipes(query)
+    recipes = filter_recipes(recipes, runtime=runtime, registry=registry)
 
     if not recipes:
         click.echo(f"No recipes found matching '{query}'.")
         return
 
-    # Compute column widths from data
-    models = [r.get("model", "") for r in recipes]
-    reg_names = [r.get("registry", "local") for r in recipes]
-    tp_vals = [str(r["tp"]) if r.get("tp", "") != "" else "-" for r in recipes]
-    mn_vals = [str(r.get("min_nodes", 1)) for r in recipes]
-    gm_vals = [str(r["gpu_mem"]) if r.get("gpu_mem", "") != "" else "-" for r in recipes]
-    w_name = max(len("Name"), *(len(r["name"]) for r in recipes)) + 2
-    w_rt = max(len("Runtime"), *(len(r["runtime"]) for r in recipes)) + 2
-    w_tp = max(len("TP"), *(len(v) for v in tp_vals)) + 2
-    w_mn = max(len("Nodes"), *(len(v) for v in mn_vals)) + 2
-    w_gm = max(len("GPU Mem"), *(len(v) for v in gm_vals)) + 2
-    w_model = max(len("Model"), *(len(m) for m in models)) + 2
-    w_reg = max(len("Registry"), *(len(n) for n in reg_names))
-
-    click.echo(f"{'Name':<{w_name}} {'Runtime':<{w_rt}} {'TP':<{w_tp}} {'Nodes':<{w_mn}} {'GPU Mem':<{w_gm}} {'Model':<{w_model}} {'Registry':<{w_reg}}")
-    click.echo("-" * (w_name + w_rt + w_tp + w_mn + w_gm + w_model + w_reg + 6))
-    for r, model, reg_name, tp, mn, gm in zip(recipes, models, reg_names, tp_vals, mn_vals, gm_vals):
-        click.echo(f"{r['name']:<{w_name}} {r['runtime']:<{w_rt}} {tp:<{w_tp}} {mn:<{w_mn}} {gm:<{w_gm}} {model:<{w_model}} {reg_name:<{w_reg}}")
+    click.echo(format_recipe_table(recipes, show_model=True))
 
 
 @recipe.command("show")
@@ -1622,17 +1504,8 @@ def recipe_search(ctx, query, config_path=None, ):
 @click.pass_context
 def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, config_path=None):
     """Show detailed recipe information."""
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
-
-    config, registry_mgr = _get_config_and_registry(config_path)
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    config, _ = _get_config_and_registry(config_path)
+    recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
 
     cli_overrides = {}
     if tensor_parallel is not None:
@@ -1650,18 +1523,10 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, config_path=None):
 def recipe_validate(ctx, recipe_name, config_path=None):
     """Validate a recipe file."""
     from sparkrun.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
 
     v = init_sparkrun()
-    config, registry_mgr = _get_config_and_registry(config_path)
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    config, _ = _get_config_and_registry(config_path)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     issues = recipe.validate()
 
@@ -1704,17 +1569,8 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
 
       sparkrun recipe vram my-recipe.yaml --max-model-len 8192 --gpu-mem 0.9
     """
-    from sparkrun.recipe import Recipe, find_recipe, RecipeError
-
-    config, registry_mgr = _get_config_and_registry(config_path)
-    registry_mgr.ensure_initialized()
-
-    try:
-        recipe_path = find_recipe(recipe_name, config.get_recipe_search_paths(), registry_mgr)
-        recipe = Recipe.load(recipe_path)
-    except RecipeError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
+    config, _ = _get_config_and_registry(config_path)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     click.echo(f"Recipe:  {recipe.name}")
     click.echo(f"Model:   {recipe.model}")
@@ -1818,135 +1674,3 @@ def recipe_remove_registry(ctx, name, config_path=None, ):
     except RegistryError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
-
-
-def _distribute_resources(
-        image: str,
-        model: str,
-        host_list: list[str],
-        cache_dir: str,
-        config,
-        dry_run: bool,
-        skip_ib: bool,
-        model_revision: str | None = None,
-        recipe_name: str = "",
-) -> tuple[dict[str, str] | None, dict[str, str], dict[str, str]]:
-    """Detect IB, distribute container image and model to target hosts.
-
-    Performs InfiniBand detection (for both NCCL env and IB transfer IPs),
-    then distributes the container image and model from local to all
-    remote hosts using the fast IB network when available.
-
-    For localhost targets, only ensures the image/model exist locally.
-
-    Args:
-        image: Container image reference.
-        model: HuggingFace model identifier (may be empty).
-        host_list: Target hostnames/IPs.
-        cache_dir: HuggingFace cache directory.
-        config: SparkrunConfig instance.
-        dry_run: Show what would be done without executing.
-        skip_ib: Skip InfiniBand detection.
-        model_revision: Optional HuggingFace model revision to pin.
-        recipe_name: Recipe name for pending-op lock display.
-
-    Returns:
-        Tuple of (nccl_env, ib_ip_map, mgmt_ip_map).  ``nccl_env`` is
-        ``None`` when IB detection was skipped or not applicable.
-    """
-    from sparkrun.orchestration.primitives import build_ssh_kwargs
-    from sparkrun.orchestration.infiniband import detect_ib_for_hosts
-    from sparkrun.containers.distribute import distribute_image_from_local
-    from sparkrun.containers.registry import ensure_image
-    from sparkrun.models.distribute import distribute_model_from_local
-    from sparkrun.models.download import download_model
-    from sparkrun.pending_ops import pending_op
-
-    # Common kwargs for pending-op lock files
-    _pop_kw = dict(
-        recipe=recipe_name,
-        model=model, image=image,
-        hosts=host_list, cache_dir=str(config.cache_dir),
-    )
-    # Derive a cluster_id-ish key for the lock files.  The real cluster_id
-    # is generated earlier in run(); we receive the image+model+hosts here
-    # so we hash the same inputs to keep the lock name stable.
-    import hashlib
-    _lock_key = hashlib.sha256(
-        f"{image}|{model}|{','.join(host_list)}".encode()
-    ).hexdigest()[:12]
-    _lock_id = f"sparkrun_{_lock_key}"
-
-    is_local = (
-            len(host_list) <= 1
-            and host_list[0] in ("localhost", "127.0.0.1", "")
-    )
-
-    if is_local:
-        # Local-only: just ensure image and model exist, no SSH needed
-        with pending_op(_lock_id, "image_pull", **_pop_kw):
-            click.echo("Ensuring container image is available locally...")
-            ensure_image(image, dry_run=dry_run)
-        if model:
-            with pending_op(_lock_id, "model_download", **_pop_kw):
-                click.echo(f"Ensuring model {model} is available locally...")
-                download_model(model, cache_dir=cache_dir, revision=model_revision, dry_run=dry_run)
-        return None, {}, {}  # let runtime handle its own local IB detection
-
-    ssh_kwargs = build_ssh_kwargs(config)
-    nccl_env: dict[str, str] = {}
-    ib_ip_map: dict[str, str] = {}
-    mgmt_ip_map: dict[str, str] = {}
-    transfer_hosts: list[str] | None = None
-
-    # Step 1: Detect InfiniBand for NCCL env + transfer routing
-    if not skip_ib:
-        # click.echo(f"Detecting InfiniBand on {len(host_list)} host(s)...")
-        ib_result = detect_ib_for_hosts(
-            host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
-        )
-        nccl_env = ib_result.nccl_env
-        ib_ip_map = ib_result.ib_ip_map
-        mgmt_ip_map = ib_result.mgmt_ip_map
-        if ib_result.ib_ip_map:
-            transfer_hosts = [
-                ib_result.ib_ip_map.get(h, h) for h in host_list
-            ]
-            click.echo(
-                f"  Using IB network for transfers "
-                f"({len(ib_result.ib_ip_map)}/{len(host_list)} hosts)"
-            )
-
-    # Step 2: Distribute container image
-    # click.echo(f"Distributing image to {len(host_list)} host(s)...")
-    with pending_op(_lock_id, "image_distribute", **_pop_kw):
-        img_failed = distribute_image_from_local(
-            image, host_list,
-            transfer_hosts=transfer_hosts,
-            dry_run=dry_run, **ssh_kwargs,
-        )
-    if img_failed:
-        click.echo(
-            "Warning: Image distribution failed on: %s" % ", ".join(img_failed),
-            err=True,
-        )
-
-    # Step 3: Distribute model
-    if model:
-        with pending_op(_lock_id, "model_download", **_pop_kw):
-            mdl_failed = distribute_model_from_local(
-                model, host_list,
-                cache_dir=cache_dir,
-                revision=model_revision,
-                transfer_hosts=transfer_hosts,
-                dry_run=dry_run, **ssh_kwargs,
-            )
-        if mdl_failed:
-            click.echo(
-                "Warning: Model distribution failed on: %s" % ", ".join(mdl_failed),
-                err=True,
-            )
-
-    click.echo("Distribution complete.")
-    click.echo()
-    return nccl_env, ib_ip_map, mgmt_ip_map
