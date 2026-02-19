@@ -1024,6 +1024,232 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
         sys.exit(result.returncode)
 
 
+@setup.command("cx7")
+@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
+@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
+@click.option("--cluster", "cluster_name", default=None, type=CLUSTER_NAME,
+              help="Use a saved cluster by name")
+@click.option("--user", "-u", default=None, help="SSH username (default: from config or current user)")
+@click.option("--dry-run", "-n", is_flag=True, help="Show what would be done without making changes")
+@click.option("--force", is_flag=True, help="Reconfigure even if existing config is valid")
+@click.option("--mtu", default=9000, show_default=True, type=int, help="MTU for CX7 interfaces")
+@click.option("--subnet1", default=None, help="Override subnet for CX7 partition 1 (e.g. 192.168.11.0/24)")
+@click.option("--subnet2", default=None, help="Override subnet for CX7 partition 2 (e.g. 192.168.12.0/24)")
+@click.pass_context
+def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, subnet1, subnet2):
+    """Configure CX7 network interfaces on cluster hosts.
+
+    Detects ConnectX-7 interfaces, assigns static IPs on two /24 subnets
+    with jumbo frames (MTU 9000), and applies netplan configuration.
+
+    Existing valid configurations are preserved unless --force is used.
+    IP addresses are derived from each host's management IP last octet.
+
+    Requires passwordless sudo on target hosts.
+
+    Examples:
+
+      sparkrun setup cx7 --hosts 10.24.11.13,10.24.11.14
+
+      sparkrun setup cx7 --cluster mylab --dry-run
+
+      sparkrun setup cx7 --cluster mylab --subnet1 192.168.11.0/24 --subnet2 192.168.12.0/24
+
+      sparkrun setup cx7 --cluster mylab --force
+    """
+    import os
+
+    from sparkrun.config import SparkrunConfig
+    from sparkrun.hosts import resolve_hosts
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+    from sparkrun.orchestration.networking import (
+        CX7HostDetection,
+        configure_cx7_host,
+        detect_cx7_for_hosts,
+        select_subnets,
+        plan_cluster_cx7,
+        apply_cx7_plan,
+    )
+
+    # Validate subnet pair
+    if (subnet1 is None) != (subnet2 is None):
+        click.echo("Error: --subnet1 and --subnet2 must be specified together.", err=True)
+        sys.exit(1)
+
+    config = SparkrunConfig()
+
+    # Resolve hosts
+    cluster_mgr = _get_cluster_manager()
+    host_list = resolve_hosts(
+        hosts=hosts,
+        hosts_file=hosts_file,
+        cluster_name=cluster_name,
+        cluster_manager=cluster_mgr,
+        config_default_hosts=config.default_hosts,
+    )
+
+    if not host_list:
+        click.echo("Error: No hosts specified. Use --hosts, --hosts-file, or --cluster.", err=True)
+        sys.exit(1)
+
+    # Resolve SSH user
+    cluster_user = None
+    resolved_cluster_name = cluster_name
+    if not resolved_cluster_name and not hosts and not hosts_file:
+        resolved_cluster_name = cluster_mgr.get_default()
+    if resolved_cluster_name:
+        try:
+            cluster_def = cluster_mgr.get(resolved_cluster_name)
+            cluster_user = cluster_def.user
+        except Exception:
+            pass
+
+    if user is None:
+        user = cluster_user or config.ssh_user or os.environ.get("USER", "root")
+
+    # Build SSH kwargs
+    ssh_kwargs = build_ssh_kwargs(config)
+    if user:
+        ssh_kwargs["ssh_user"] = user
+
+    # Step 1: Detect
+    detections = detect_cx7_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+
+    # Check all hosts have CX7
+    no_cx7 = [h for h, d in detections.items() if not d.detected]
+    if no_cx7:
+        click.echo("Warning: No CX7 interfaces on: %s" % ", ".join(no_cx7), err=True)
+
+    hosts_with_cx7 = {h: d for h, d in detections.items() if d.detected}
+    if not hosts_with_cx7:
+        click.echo("Error: No CX7 interfaces detected on any host.", err=True)
+        sys.exit(1)
+
+    # Step 2: Select subnets
+    try:
+        s1, s2 = select_subnets(detections, override1=subnet1, override2=subnet2)
+    except RuntimeError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+
+    click.echo()
+    click.echo("Subnets: %s, %s" % (s1, s2))
+    click.echo("MTU: %d" % mtu)
+    click.echo()
+
+    # Step 3: Plan
+    plan = plan_cluster_cx7(detections, s1, s2, mtu=mtu, force=force)
+
+    # Display plan
+    for hp in plan.host_plans:
+        det = detections.get(hp.host)
+        mgmt_label = " (%s)" % det.mgmt_ip if det and det.mgmt_ip else ""
+        click.echo("  %s%s" % (hp.host, mgmt_label))
+        for a in hp.assignments:
+            status = "OK" if not hp.needs_change else "configure"
+            click.echo("    %-20s -> %s/%d  MTU %d  [%s]" % (
+                a.iface_name, a.ip, plan.prefix_len, plan.mtu, status))
+        if not hp.assignments and hp.needs_change:
+            click.echo("    %s" % hp.reason)
+        click.echo()
+
+    # Show warnings
+    for w in plan.warnings:
+        click.echo("Warning: %s" % w, err=True)
+
+    # Step 4: Check if all valid
+    if plan.all_valid and not force:
+        click.echo("All hosts already configured. Use --force to reconfigure.")
+        return
+
+    # Count
+    needs_config = sum(1 for hp in plan.host_plans if hp.needs_change and len(hp.assignments) == 2)
+    already_ok = sum(1 for hp in plan.host_plans if not hp.needs_change)
+    has_errors = sum(1 for hp in plan.host_plans if hp.needs_change and len(hp.assignments) != 2)
+
+    if needs_config == 0:
+        if has_errors:
+            click.echo("Error: %d host(s) have issues that prevent configuration." % has_errors, err=True)
+            for e in plan.errors:
+                click.echo("  %s" % e, err=True)
+            sys.exit(1)
+        click.echo("No hosts need configuration changes.")
+        return
+
+    if dry_run:
+        click.echo("[dry-run] Would configure %d host(s), %d already valid." % (needs_config, already_ok))
+        return
+
+    # Step 5: Apply — prompt for sudo password if needed
+    sudo_hosts_needing_pw = {
+        hp.host for hp in plan.host_plans
+        if hp.needs_change and len(hp.assignments) == 2
+        and not detections.get(hp.host, CX7HostDetection(host="")).sudo_ok
+    }
+    sudo_password = None
+    if sudo_hosts_needing_pw:
+        click.echo("Sudo password required for %d host(s)." % len(sudo_hosts_needing_pw))
+        sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+
+    click.echo("Applying configuration to %d host(s)..." % needs_config)
+    results = apply_cx7_plan(
+        plan, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+        sudo_password=sudo_password, sudo_hosts=sudo_hosts_needing_pw,
+    )
+
+    # Build a map of host -> result for easy lookup
+    result_map = {r.host: r for r in results}
+
+    # Check for sudo failures and retry with per-host passwords
+    if sudo_hosts_needing_pw and not dry_run:
+        failed_sudo_hosts = [
+            r.host for r in results
+            if not r.success and r.host in sudo_hosts_needing_pw
+        ]
+        if failed_sudo_hosts:
+            click.echo()
+            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(failed_sudo_hosts))
+            # Build a lookup of host -> host_plan for retry
+            host_plan_map = {hp.host: hp for hp in plan.host_plans}
+            for fhost in failed_sudo_hosts:
+                hp = host_plan_map.get(fhost)
+                if not hp:
+                    continue
+                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
+                retry_result = configure_cx7_host(
+                    hp, mtu=plan.mtu, prefix_len=plan.prefix_len,
+                    ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                    sudo_password=per_host_pw,
+                )
+                result_map[fhost] = retry_result
+
+    # Collect final results in plan order
+    final_results = [result_map[hp.host] for hp in plan.host_plans if hp.host in result_map]
+    configured = sum(1 for r in final_results if r.success)
+    failed = sum(1 for r in final_results if not r.success)
+
+    for r in final_results:
+        if r.success:
+            click.echo("  [OK] %s: configured" % r.host)
+        else:
+            click.echo("  [FAIL] %s: %s" % (r.host, r.stderr.strip()[:100]), err=True)
+
+    click.echo()
+    parts = []
+    if configured:
+        parts.append("%d configured" % configured)
+    if already_ok:
+        parts.append("%d already valid" % already_ok)
+    if failed:
+        parts.append("%d failed" % failed)
+    if has_errors:
+        parts.append("%d skipped (errors)" % has_errors)
+    click.echo("Results: %s." % ", ".join(parts))
+
+    if failed:
+        sys.exit(1)
+
+
 @main.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
 @click.option("--hosts", "-H", default=None, help="Comma-separated host list")
