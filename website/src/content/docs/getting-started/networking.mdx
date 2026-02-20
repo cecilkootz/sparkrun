@@ -89,7 +89,7 @@ Each physical port exposes two Ethernet interfaces (the "twin" pair from the PCI
 **Never put both partitions on the same subnet.** Same-subnet twin interfaces confuse interface auto-discovery and break routing. This is a common misconfiguration that causes subtle, hard-to-debug failures.
 :::
 
-Assigning IPs to both partitions allows tools like sparkrun to use both paths for data transfers (model sync, container distribution), maximizing the available 200 Gbps. NCCL uses RoCEv2 directly and will utilize both RoCE interfaces regardless, but having IPs on both enables higher throughput for non-RDMA bulk transfers too.
+Assigning IPs to both partitions allows tools like sparkrun to potentially be able to use both paths for data transfers (model sync, container distribution), maximizing the available 200 Gbps. NCCL uses RoCEv2 directly and will utilize both RoCE interfaces regardless, but having IPs on both enables addressing both interfaces via TCP/IP interfaces.
 
 ### Jumbo frames (MTU 9000)
 
