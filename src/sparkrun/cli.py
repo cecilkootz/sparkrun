@@ -326,10 +326,10 @@ def _setup_logging(verbose: bool):
     handler.setFormatter(logging.Formatter(fmt, datefmt="%H:%M:%S"))
     root.addHandler(handler)
 
-    # Suppress noisy HTTP loggers (huggingface_hub uses httpx)
-    for name in ("httpx", "httpcore.http11", "httpcore.connection",
-                 "urllib3.connectionpool"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+    from sparkrun.utils import suppress_noisy_loggers
+    suppress_noisy_loggers()
+
+    return
 
 
 @click.group()

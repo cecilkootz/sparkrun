@@ -5,6 +5,21 @@ Keeping them here avoids circular imports and reduces duplication.
 """
 
 from __future__ import annotations
+import logging
+
+# Loggers that produce excessive output at DEBUG/INFO level.
+_NOISY_LOGGERS = (
+    "httpx",
+    "httpcore.http11",
+    "httpcore.connection",
+    "urllib3.connectionpool",
+)
+
+
+def suppress_noisy_loggers() -> None:
+    """Suppress verbose HTTP/transport loggers."""
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def coerce_value(value: str):
