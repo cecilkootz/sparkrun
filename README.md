@@ -485,16 +485,17 @@ hosts however you like — they become workers.
 
 ### Setup commands
 
-| Command                     | Description                                    |
-|-----------------------------|------------------------------------------------|
-| `sparkrun setup install`    | Install sparkrun as a uv tool + tab-completion |
-| `sparkrun setup completion` | Install shell tab-completion (bash/zsh/fish)   |
-| `sparkrun setup update`     | Update sparkrun to the latest version          |
-| `sparkrun setup ssh`        | Set up passwordless SSH mesh across hosts      |
+| Command                            | Description                                       |
+|------------------------------------|---------------------------------------------------|
+| `sparkrun setup install`           | Install sparkrun as a uv tool + tab-completion    |
+| `sparkrun setup completion`        | Install shell tab-completion (bash/zsh/fish)      |
+| `sparkrun setup update`            | Update sparkrun to the latest version             |
+| `sparkrun setup ssh`               | Set up passwordless SSH mesh across hosts         |
+| `sparkrun setup cx7`               | Detect and configure ConnectX-7 NICs across hosts |
+| `sparkrun setup fix-permissions`   | Fix root-owned HF cache files on cluster hosts    |
 
 ## Roadmap
 
-- `sparkrun setup` subcommands for basic system configuration, ConnectX-7 NIC setup, and SSH mesh provisioning
 - Additional bundled recipes for popular models
 - Health checks and status monitoring for running workloads
 

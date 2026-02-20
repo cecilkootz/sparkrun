@@ -33,7 +33,25 @@ sparkrun setup fix-permissions --cluster mylab --cache-dir /data/hf-cache
 sparkrun setup fix-permissions --cluster mylab --dry-run
 ```
 
-This runs `chown` on `~/.cache/huggingface` across all target hosts, handling sudo detection automatically. If passwordless sudo isn't configured, it will prompt for a password once.
+This runs `chown` on `~/.cache/huggingface` across all target hosts. It tries passwordless sudo first; if that fails, it prompts for a password once.
+
+**Automatic fix on every run:**
+
+sparkrun automatically attempts to fix cache ownership on remote hosts before syncing models. If non-interactive sudo is available (either via general NOPASSWD or a scoped sudoers entry), this happens silently. If sudo isn't available, sparkrun logs a warning and continues — the rsync may still succeed if permissions aren't actually broken.
+
+To make this automatic fix work without ever needing a password, run `--save-sudo` once:
+
+```bash
+# Install a scoped sudoers entry on all cluster hosts (one-time setup)
+sparkrun setup fix-permissions --cluster mylab --save-sudo
+```
+
+This installs a minimal sudoers rule on each host that permits **only** `chown -R <user> <cache_dir>` without a password — no broader sudo privileges are granted. After this, every future `sparkrun run` silently fixes cache ownership before model distribution.
+
+```bash
+# Preview what the sudoers entry would look like
+sparkrun setup fix-permissions --cluster mylab --save-sudo --dry-run
+```
 
 Alternatively, you can fix a single machine manually:
 
@@ -45,4 +63,4 @@ sudo chown -R $USER:$USER ~/.cache/huggingface
 
 - Let sparkrun handle model downloading and distribution — it downloads as your user and rsyncs to target nodes.
 - Avoid running `huggingface-cli download` or model download scripts inside inference containers. Download on the host instead.
-- If a container does end up downloading files, run `sparkrun setup fix-permissions` to fix ownership before the next launch.
+- Run `sparkrun setup fix-permissions --save-sudo` once per cluster so that cache ownership is corrected automatically on every launch.
