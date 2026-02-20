@@ -43,10 +43,8 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
         v = init_framework_desktop("sparkrun", log_level=log_level, fault_handler=False, shutdown_hooks=False, fixed_logger=logger)
 
         # suppress noisy loggers (separate from our logging level)
-        logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
-        logging.getLogger('httpx').setLevel(logging.WARNING)
-        logging.getLogger('httpcore.http11').setLevel(logging.WARNING)
-        logging.getLogger('httpcore.connection').setLevel(logging.WARNING)
+        from sparkrun.utils import suppress_noisy_loggers
+        suppress_noisy_loggers()
 
     _variables = v
 

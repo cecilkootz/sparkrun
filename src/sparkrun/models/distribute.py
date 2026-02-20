@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import logging
 
-from sparkrun.config import DEFAULT_HF_CACHE_DIR
-from sparkrun.models.download import download_model
+from sparkrun.config import resolve_cache_dir
+from sparkrun.models.download import download_model, model_cache_path
+from sparkrun.orchestration.primitives import map_transfer_failures
 from sparkrun.orchestration.ssh import (
     build_ssh_opts_string,
-    run_remote_script,
+    run_remote_scripts_parallel,
     run_rsync_parallel,
 )
 from sparkrun.scripts import read_script
@@ -24,14 +25,52 @@ logger = logging.getLogger(__name__)
 def _model_cache_path(model_id: str, cache_dir: str) -> str:
     """Compute the HF cache path for a model.
 
-    Mirrors the logic in :func:`sparkrun.models.download.is_model_cached`.
-    For GGUF model specs (``repo:quant``), strips the quant variant
-    since the cache directory is keyed by repository name only.
+    Thin wrapper around :func:`sparkrun.models.download.model_cache_path`
+    kept for backward compatibility.
     """
-    from sparkrun.models.download import parse_gguf_model_spec
-    repo_id, _ = parse_gguf_model_spec(model_id)
-    safe_name = repo_id.replace("/", "--")
-    return f"{cache_dir}/hub/models--{safe_name}"
+    return model_cache_path(model_id, cache_dir)
+
+
+def _try_fix_remote_permissions(
+    cache_dir: str,
+    hosts: list[str],
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Best-effort chown of the HF cache on remote hosts before rsync.
+
+    Docker containers create root-owned files in the cache directory.
+    This tries non-interactive ``sudo -n chown`` on each host so the
+    SSH user can rsync into the directory.  Failures are non-fatal —
+    a warning is logged with a hint about ``--save-sudo``.
+    """
+    script = (
+        'set -euo pipefail\n'
+        'CACHE_DIR="{cache_dir}"\n'
+        '[ -d "$CACHE_DIR" ] || exit 0\n'
+        'OWNER=$(stat -c "%U" "$CACHE_DIR" 2>/dev/null || echo "")\n'
+        'ME=$(id -un)\n'
+        '[ "$OWNER" = "$ME" ] && exit 0\n'
+        'sudo -n /usr/bin/chown -R "$ME" "$CACHE_DIR" 2>/dev/null\n'
+    ).format(cache_dir=cache_dir)
+
+    results = run_remote_scripts_parallel(
+        hosts, script,
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        timeout=30, dry_run=dry_run,
+    )
+
+    failed = [r.host for r in results if not r.success]
+    if failed:
+        logger.warning(
+            "Could not fix cache ownership on %d host(s) — rsync may fail "
+            "if Docker left root-owned files.  Run "
+            "'sparkrun setup fix-permissions --save-sudo' to enable "
+            "passwordless chown for future runs.",
+            len(failed),
+        )
 
 
 def distribute_model_from_local(
@@ -75,7 +114,7 @@ def distribute_model_from_local(
         List of hostnames (from *hosts*) where distribution failed
         (empty = full success).
     """
-    cache = cache_dir or str(DEFAULT_HF_CACHE_DIR)
+    cache = resolve_cache_dir(cache_dir)
     logger.info("Distributing model '%s' from local to %d host(s)", model_id, len(hosts))
 
     # Step 1: download model locally
@@ -89,7 +128,14 @@ def distribute_model_from_local(
 
     xfer = transfer_hosts or hosts
 
-    # Step 2: rsync model cache to all hosts in parallel
+    # Step 2: best-effort fix of remote cache ownership before rsync
+    _try_fix_remote_permissions(
+        cache, hosts,
+        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        dry_run=dry_run,
+    )
+
+    # Step 3: rsync model cache to all hosts in parallel
     model_path = _model_cache_path(model_id, cache)
     results = run_rsync_parallel(
         model_path, xfer, model_path,
@@ -98,8 +144,7 @@ def distribute_model_from_local(
     )
 
     # Map transfer IPs back to management hosts for failure reporting
-    xfer_to_host = dict(zip(xfer, hosts))
-    failed = [xfer_to_host.get(r.host, r.host) for r in results if not r.success]
+    failed = map_transfer_failures(results, xfer, hosts)
     if failed:
         logger.warning("Model distribution failed on hosts: %s", failed)
     else:
@@ -143,42 +188,31 @@ def distribute_model_from_head(
     Returns:
         List of hostnames where distribution failed (empty = full success).
     """
+    from sparkrun.orchestration.distribution import _distribute_from_head
+
     if not hosts:
         return []
 
-    cache = cache_dir or str(DEFAULT_HF_CACHE_DIR)
+    cache = resolve_cache_dir(cache_dir)
     head = hosts[0]
     logger.info("Distributing model '%s' from head (%s) to %d host(s)",
                 model_id, head, len(hosts))
 
-    # Step 1: download model on head
+    # Build ensure script (download model on head)
     from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec
     revision_flag = "--revision %s " % revision if revision else ""
     if is_gguf_model(model_id):
         repo_id, quant = parse_gguf_model_spec(model_id)
-        dl_script = read_script("model_sync_gguf.sh").format(
+        ensure_script = read_script("model_sync_gguf.sh").format(
             repo_id=repo_id, quant=quant or "", cache=cache,
             revision_flag=revision_flag,
         )
     else:
-        dl_script = read_script("model_sync.sh").format(
+        ensure_script = read_script("model_sync.sh").format(
             model_id=model_id, cache=cache, revision_flag=revision_flag,
         )
-    dl_result = run_remote_script(
-        head, dl_script,
-        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
-        timeout=timeout, dry_run=dry_run,
-    )
-    if not dl_result.success:
-        logger.error("Failed to download model on head %s", head)
-        return list(hosts)
 
-    # Step 2: if single host, we're done
-    if len(hosts) == 1:
-        logger.info("Single host — model download complete")
-        return []
-
-    # Step 3: distribute from head to remaining hosts
+    # Build distribute script (rsync from head to workers)
     targets = worker_transfer_hosts or hosts[1:]
     model_path = _model_cache_path(model_id, cache)
     ssh_opts = build_ssh_opts_string(
@@ -190,16 +224,12 @@ def distribute_model_from_head(
         ssh_opts=ssh_opts,
         ssh_user=ssh_user or "",
     )
-    dist_result = run_remote_script(
-        head, dist_script,
+
+    return _distribute_from_head(
+        head=head, hosts=hosts,
+        ensure_script=ensure_script,
+        distribute_script=dist_script,
+        resource_label="Model '%s'" % model_id,
         ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
         timeout=timeout, dry_run=dry_run,
     )
-
-    if dist_result.success:
-        logger.info("Model '%s' distributed from head to all targets", model_id)
-        return []
-
-    # Report using management hostnames
-    logger.warning("Model distribution from head failed (rc=%d)", dist_result.returncode)
-    return list(hosts[1:])

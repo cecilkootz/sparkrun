@@ -86,10 +86,13 @@ Runtimes must implement `generate_command()` and `resolve_container()`. The `clu
 
 All remote operations use **SSH stdin piping** — scripts are generated as Python strings and piped to `ssh <host> bash -s`. No files are ever copied to remote hosts.
 
-- **`ssh.py`** — `run_remote_script()`, `run_remote_scripts_parallel()`, `run_rsync_parallel()`, `stream_remote_logs()`
-- **`docker.py`** — Pure command-string generators (`docker_run_cmd`, `docker_exec_cmd`, etc.), cluster ID generation, job metadata persistence
+- **`ssh.py`** — `run_remote_script()`, `run_remote_scripts_parallel()`, `run_remote_sudo_script()`, `run_rsync_parallel()`, `detect_sudo_on_hosts()`, `stream_remote_logs()`
+- **`docker.py`** — Pure command-string generators (`docker_run_cmd`, `docker_exec_cmd`, etc.), cluster ID generation
+- **`distribution.py`** — High-level resource distribution: IB detection, container image and model syncing to target hosts (orchestrates `models/`, `containers/`, and IB detection)
 - **`infiniband.py`** — IB detection script generation, NCCL env var computation, IB IP mapping for fast transfers
+- **`networking.py`** — ConnectX-7 NIC detection, IP assignment planning, CX7 configuration script generation, host key distribution
 - **`primitives.py`** — Higher-level composition: `build_ssh_kwargs()`, `build_volumes()`, `merge_env()`, `detect_infiniband()`, `run_script_on_host()`, `cleanup_containers()`
+- **`job_metadata.py`** — Persistent job metadata (cluster_id → recipe mapping) stored in `~/.cache/sparkrun/jobs/`
 - **`scripts.py`** — Script file loader (`read_script()`) for embedded bash scripts in `scripts/`
 
 ### Recipe System

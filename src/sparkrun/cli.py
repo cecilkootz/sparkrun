@@ -12,28 +12,13 @@ from sparkrun import __version__
 logger = logging.getLogger(__name__)
 
 
-def _coerce_value(value: str):
-    """Auto-coerce a string value to int, float, or bool if appropriate."""
-    if value.lower() in ("true", "yes"):
-        return True
-    if value.lower() in ("false", "no"):
-        return False
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    try:
-        return float(value)
-    except ValueError:
-        pass
-    return value
-
-
 def _parse_options(options: tuple[str, ...]) -> dict:
     """Parse --option key=value pairs into a dict.
 
     Values are auto-coerced to int/float/bool where possible.
     """
+    from sparkrun.utils import coerce_value
+
     result = {}
     for opt in options:
         if "=" not in opt:
@@ -51,7 +36,7 @@ def _parse_options(options: tuple[str, ...]) -> dict:
                 err=True,
             )
             sys.exit(1)
-        result[key] = _coerce_value(value)
+        result[key] = coerce_value(value)
     return result
 
 
@@ -106,6 +91,29 @@ def _apply_tp_trimming(
     return trimmed
 
 
+def _resolve_cluster_user(
+        cluster_name: str | None,
+        hosts: str | None,
+        hosts_file: str | None,
+        cluster_mgr,
+) -> str | None:
+    """Resolve the SSH user from a cluster definition, if applicable.
+
+    Returns the cluster's configured user, or None if no cluster is
+    resolved or the cluster has no user set.
+    """
+    resolved = cluster_name
+    if not resolved and not hosts and not hosts_file:
+        resolved = cluster_mgr.get_default() if cluster_mgr else None
+    if resolved:
+        try:
+            cluster_def = cluster_mgr.get(resolved)
+            return cluster_def.user
+        except Exception:
+            logger.debug("Failed to resolve cluster '%s'", resolved, exc_info=True)
+    return None
+
+
 def _get_cluster_manager(v=None):
     """Create a ClusterManager using the SAF config root."""
     from sparkrun.cluster_manager import ClusterManager
@@ -153,6 +161,21 @@ def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None):
         click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
         sys.exit(1)
     return host_list, cluster_mgr
+
+
+def _resolve_setup_context(hosts, hosts_file, cluster_name, config, user=None):
+    """Resolve hosts, user, and SSH kwargs for setup commands."""
+    import os
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
+    if user is None:
+        user = cluster_user or config.ssh_user or os.environ.get("USER", "root")
+    ssh_kwargs = build_ssh_kwargs(config)
+    if user:
+        ssh_kwargs["ssh_user"] = user
+    return host_list, user, ssh_kwargs
 
 
 def _shell_rc_file(shell):
@@ -217,6 +240,23 @@ class ClusterNameType(click.ParamType):
 
 
 CLUSTER_NAME = ClusterNameType()
+
+
+def host_options(f):
+    """Common host-targeting options: --hosts, --hosts-file, --cluster."""
+    f = click.option("--cluster", "cluster_name", default=None, type=CLUSTER_NAME,
+                     help="Use a saved cluster by name")(f)
+    f = click.option("--hosts-file", default=None,
+                     help="File with hosts (one per line, # comments)")(f)
+    f = click.option("--hosts", "-H", default=None,
+                     help="Comma-separated host list")(f)
+    return f
+
+
+def dry_run_option(f):
+    """Common --dry-run flag."""
+    return click.option("--dry-run", "-n", is_flag=True,
+                        help="Show what would be done")(f)
 
 
 class RegistryNameType(click.ParamType):
@@ -286,10 +326,10 @@ def _setup_logging(verbose: bool):
     handler.setFormatter(logging.Formatter(fmt, datefmt="%H:%M:%S"))
     root.addHandler(handler)
 
-    # Suppress noisy HTTP loggers (huggingface_hub uses httpx)
-    for name in ("httpx", "httpcore.http11", "httpcore.connection",
-                 "urllib3.connectionpool", "huggingface_hub.file_download"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+    from sparkrun.utils import suppress_noisy_loggers
+    suppress_noisy_loggers()
+
+    return
 
 
 @click.group()
@@ -305,9 +345,7 @@ def main(ctx, verbose):
 
 @main.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
-@click.option("--hosts", "-H", default=None, help="Comma-separated host list (first=head)")
-@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
-@click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
+@host_options
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
@@ -320,7 +358,7 @@ def main(ctx, verbose):
 @click.option("--dashboard", is_flag=True, help="Enable Ray dashboard on head node")
 @click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port")
 # @click.option("--setup", is_flag=True, hidden=True, help="Deprecated: distribution is now automatic")
-@click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
+@dry_run_option
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
 @click.option("--skip-ib", is_flag=True, help="Skip InfiniBand detection")
@@ -392,16 +430,7 @@ def run(
         click.echo(f"Warning: {issue}", err=True)
 
     # Determine hosts
-    from sparkrun.hosts import resolve_hosts
-
-    cluster_mgr = _get_cluster_manager(v)
-    host_list = resolve_hosts(
-        hosts=hosts,
-        hosts_file=hosts_file,
-        cluster_name=cluster_name,
-        cluster_manager=cluster_mgr,
-        config_default_hosts=config.default_hosts,
-    )
+    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
     # Determine host source for display
     if hosts:
@@ -459,7 +488,7 @@ def run(
         host_list = host_list[:1]
 
     # Derive deterministic cluster_id from recipe + (trimmed) hosts
-    from sparkrun.orchestration.docker import generate_cluster_id, save_job_metadata
+    from sparkrun.orchestration.job_metadata import generate_cluster_id, save_job_metadata
     cluster_id = generate_cluster_id(recipe, host_list)
 
     # Cache job metadata for later lookup by cluster status
@@ -468,7 +497,7 @@ def run(
             save_job_metadata(cluster_id, recipe, host_list,
                               overrides=overrides, cache_dir=str(config.cache_dir))
         except Exception:
-            pass  # non-critical; don't block launch
+            logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
 
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
@@ -496,7 +525,7 @@ def run(
                                   overrides=overrides, cache_dir=str(config.cache_dir),
                                   ib_ip_map=ib_ip_map, mgmt_ip_map=mgmt_ip_map)
             except Exception:
-                pass
+                logger.debug("Failed to update job metadata: %s", cluster_id, exc_info=True)
 
     # For GGUF models that were pre-synced, resolve the container-internal
     # cache path and inject it as the ``model`` override so the recipe
@@ -549,6 +578,11 @@ def run(
         click.echo(f"  {line}")
     click.echo()
 
+    # Best-effort page cache clear before container launch
+    if not runtime.is_delegating_runtime():
+        from sparkrun.orchestration.primitives import try_clear_page_cache, build_ssh_kwargs
+        try_clear_page_cache(host_list, ssh_kwargs=build_ssh_kwargs(config), dry_run=dry_run)
+
     # Launch — the runtime controls solo vs cluster orchestration.
     # If distribution pre-detected IB, pass nccl_env through to avoid
     # redundant detection inside the runtime.
@@ -596,80 +630,15 @@ def list_cmd(ctx, registry, runtime, query):
 
 
 def _display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overrides=None):
-    """Display recipe details (shared by show and recipe show commands)."""
-    click.echo(f"Name:         {recipe.name}")
-    click.echo(f"Description:  {recipe.description}")
-    if recipe.maintainer:
-        click.echo(f"Maintainer:   {recipe.maintainer}")
-    click.echo(f"Runtime:      {recipe.runtime}")
-    click.echo(f"Model:        {recipe.model}")
-    click.echo(f"Container:    {recipe.container}")
-    max_nodes = recipe.max_nodes or "unlimited"
-    click.echo(f"Nodes:        {recipe.min_nodes} - {max_nodes}")
-    click.echo(f"Repository:   {registry_name or 'Local'}")
-    click.echo(f"File Path:    {recipe.source_path}")
-
-    if recipe.defaults:
-        click.echo("\nDefaults:")
-        for k, v in sorted(recipe.defaults.items()):
-            click.echo(f"  {k}: {v}")
-
-    if recipe.env:
-        click.echo("\nEnvironment:")
-        for k, v in sorted(recipe.env.items()):
-            click.echo(f"  {k}={v}")
-
-    if recipe.command:
-        click.echo(f"\nCommand:\n  {recipe.command.strip()}")
-
-    if show_vram:
-        _display_vram_estimate(recipe, cli_overrides=cli_overrides)
+    """Display recipe details (delegates to cli_formatters)."""
+    from sparkrun.utils.cli_formatters import display_recipe_detail
+    display_recipe_detail(recipe, show_vram=show_vram, registry_name=registry_name, cli_overrides=cli_overrides)
 
 
 def _display_vram_estimate(recipe, cli_overrides=None, auto_detect=True):
-    """Display VRAM estimation for a recipe."""
-    from sparkrun.vram import DGX_SPARK_VRAM_GB
-
-    try:
-        est = recipe.estimate_vram(cli_overrides=cli_overrides, auto_detect=auto_detect)
-    except Exception as e:
-        click.echo(f"\nVRAM estimation failed: {e}", err=True)
-        return
-
-    click.echo("\nVRAM Estimation:")
-    if est.model_dtype:
-        click.echo(f"  Model dtype:      {est.model_dtype}")
-    if est.model_params:
-        click.echo(f"  Model params:     {est.model_params:,}")
-    click.echo(f"  KV cache dtype:   {est.kv_dtype or 'bfloat16 (default)'}")
-    if all([est.num_layers, est.num_kv_heads, est.head_dim]):
-        click.echo(f"  Architecture:     {est.num_layers} layers, {est.num_kv_heads} KV heads, {est.head_dim} head_dim")
-    click.echo(f"  Model weights:    {est.model_weights_gb:.2f} GB")
-    if est.kv_cache_total_gb is not None:
-        click.echo(f"  KV cache:         {est.kv_cache_total_gb:.2f} GB (max_model_len={est.max_model_len:,})")
-    click.echo(f"  Tensor parallel:  {est.tensor_parallel}")
-    click.echo(f"  Per-GPU total:    {est.total_per_gpu_gb:.2f} GB")
-    fit_str = "YES" if est.fits_dgx_spark else "EXCEEDS %.0f GB" % DGX_SPARK_VRAM_GB
-    click.echo(f"  DGX Spark fit:    {fit_str}")
-
-    # GPU memory budget analysis
-    if est.gpu_memory_utilization is not None:
-        click.echo(f"\n  GPU Memory Budget:")
-        click.echo(f"    gpu_memory_utilization: {est.gpu_memory_utilization:.0%}")
-        click.echo(f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GB"
-                   f" ({DGX_SPARK_VRAM_GB:.0f} GB x {est.gpu_memory_utilization:.0%})")
-        click.echo(f"    Available for KV:      {est.available_kv_gb:.1f} GB")
-        if est.max_context_tokens is not None:
-            click.echo(f"    Max context tokens:    {est.max_context_tokens:,}")
-            if est.context_multiplier is not None and est.max_model_len:
-                click.echo(f"    Context multiplier:    {est.context_multiplier:.1f}x"
-                           f" (vs max_model_len={est.max_model_len:,})")
-                if est.context_multiplier < 1.0:
-                    click.echo(f"    WARNING: max_model_len exceeds available KV budget"
-                               f" ({est.context_multiplier:.1%} fits)")
-
-    for w in est.warnings:
-        click.echo(f"  Warning: {w}")
+    """Display VRAM estimation (delegates to cli_formatters)."""
+    from sparkrun.utils.cli_formatters import display_vram_estimate
+    display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=auto_detect)
 
 
 @main.command()
@@ -694,10 +663,8 @@ def search_cmd(ctx, registry, runtime, query):
 
 
 @main.command("status")
-@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
-@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
-@click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
-@click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
+@host_options
+@dry_run_option
 @click.pass_context
 def status(ctx, hosts, hosts_file, cluster_name, dry_run):
     """Show sparkrun containers running on cluster hosts (alias for 'cluster status')."""
@@ -904,16 +871,13 @@ def setup_update(ctx):
 
 
 @setup.command("ssh")
-@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
-@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
-@click.option("--cluster", "cluster_name", default=None, type=CLUSTER_NAME,
-              help="Use a saved cluster by name")
+@host_options
 @click.option("--extra-hosts", default=None,
               help="Additional comma-separated hosts to include (e.g. control machine)")
 @click.option("--include-self/--no-include-self", default=True, show_default=True,
               help="Include this machine's hostname in the mesh")
 @click.option("--user", "-u", default=None, help="SSH username (default: current user)")
-@click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
+@dry_run_option
 @click.pass_context
 def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, user, dry_run):
     """Set up passwordless SSH mesh across cluster hosts.
@@ -953,16 +917,7 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     )
 
     # Determine the cluster's configured user (if hosts came from a cluster)
-    cluster_user = None
-    resolved_cluster_name = cluster_name
-    if not resolved_cluster_name and not hosts and not hosts_file:
-        resolved_cluster_name = cluster_mgr.get_default()
-    if resolved_cluster_name:
-        try:
-            cluster_def = cluster_mgr.get(resolved_cluster_name)
-            cluster_user = cluster_def.user
-        except Exception:
-            pass
+    cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
 
     # Track original cluster hosts before extras/self are appended
     cluster_hosts = list(host_list)
@@ -1025,12 +980,9 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
 
 
 @setup.command("cx7")
-@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
-@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
-@click.option("--cluster", "cluster_name", default=None, type=CLUSTER_NAME,
-              help="Use a saved cluster by name")
+@host_options
 @click.option("--user", "-u", default=None, help="SSH username (default: from config or current user)")
-@click.option("--dry-run", "-n", is_flag=True, help="Show what would be done without making changes")
+@dry_run_option
 @click.option("--force", is_flag=True, help="Reconfigure even if existing config is valid")
 @click.option("--mtu", default=9000, show_default=True, type=int, help="MTU for CX7 interfaces")
 @click.option("--subnet1", default=None, help="Override subnet for CX7 partition 1 (e.g. 192.168.11.0/24)")
@@ -1057,15 +1009,12 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
       sparkrun setup cx7 --cluster mylab --force
     """
-    import os
-
     from sparkrun.config import SparkrunConfig
-    from sparkrun.hosts import resolve_hosts
-    from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.networking import (
         CX7HostDetection,
         configure_cx7_host,
         detect_cx7_for_hosts,
+        distribute_cx7_host_keys,
         select_subnets,
         plan_cluster_cx7,
         apply_cx7_plan,
@@ -1077,40 +1026,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         sys.exit(1)
 
     config = SparkrunConfig()
-
-    # Resolve hosts
-    cluster_mgr = _get_cluster_manager()
-    host_list = resolve_hosts(
-        hosts=hosts,
-        hosts_file=hosts_file,
-        cluster_name=cluster_name,
-        cluster_manager=cluster_mgr,
-        config_default_hosts=config.default_hosts,
-    )
-
-    if not host_list:
-        click.echo("Error: No hosts specified. Use --hosts, --hosts-file, or --cluster.", err=True)
-        sys.exit(1)
-
-    # Resolve SSH user
-    cluster_user = None
-    resolved_cluster_name = cluster_name
-    if not resolved_cluster_name and not hosts and not hosts_file:
-        resolved_cluster_name = cluster_mgr.get_default()
-    if resolved_cluster_name:
-        try:
-            cluster_def = cluster_mgr.get(resolved_cluster_name)
-            cluster_user = cluster_def.user
-        except Exception:
-            pass
-
-    if user is None:
-        user = cluster_user or config.ssh_user or os.environ.get("USER", "root")
-
-    # Build SSH kwargs
-    ssh_kwargs = build_ssh_kwargs(config)
-    if user:
-        ssh_kwargs["ssh_user"] = user
+    host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
 
     # Step 1: Detect
     detections = detect_cx7_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
@@ -1184,7 +1100,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
     sudo_hosts_needing_pw = {
         hp.host for hp in plan.host_plans
         if hp.needs_change and len(hp.assignments) == 2
-        and not detections.get(hp.host, CX7HostDetection(host="")).sudo_ok
+           and not detections.get(hp.host, CX7HostDetection(host="")).sudo_ok
     }
     sudo_password = None
     if sudo_hosts_needing_pw:
@@ -1229,9 +1145,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
     failed = sum(1 for r in final_results if not r.success)
 
     for r in final_results:
-        if r.success:
-            click.echo("  [OK] %s: configured" % r.host)
-        else:
+        if not r.success:
             click.echo("  [FAIL] %s: %s" % (r.host, r.stderr.strip()[:100]), err=True)
 
     click.echo()
@@ -1246,17 +1160,327 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         parts.append("%d skipped (errors)" % has_errors)
     click.echo("Results: %s." % ", ".join(parts))
 
+    # Step 6: Distribute CX7 host keys to known_hosts
+    # Collect ALL CX7 IPs (both existing valid and newly configured) so that
+    # every host (and the control machine) can SSH to every CX7 IP.
+    all_cx7_ips = []
+    for hp in plan.host_plans:
+        for a in hp.assignments:
+            if a.ip:
+                all_cx7_ips.append(a.ip)
+
+    if all_cx7_ips and not dry_run:
+        click.echo()
+        click.echo("Distributing CX7 host keys to known_hosts...")
+        ks_results = distribute_cx7_host_keys(
+            all_cx7_ips, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+        )
+        ks_ok = sum(1 for r in ks_results if r.success)
+        ks_fail = sum(1 for r in ks_results if not r.success)
+        if ks_fail:
+            click.echo("  Warning: keyscan failed on %d host(s)." % ks_fail, err=True)
+        click.echo("  Host keys for %d CX7 IPs distributed to %d host(s) + local." % (len(all_cx7_ips), ks_ok))
+
     if failed:
+        sys.exit(1)
+
+
+@setup.command("fix-permissions")
+@host_options
+@click.option("--user", "-u", default=None, help="Target owner (default: SSH user)")
+@click.option("--cache-dir", default=None, help="Cache directory (default: ~/.cache/huggingface)")
+@click.option("--save-sudo", is_flag=True, default=False,
+              help="Install sudoers entry for passwordless chown (requires sudo once)")
+@dry_run_option
+@click.pass_context
+def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir, save_sudo, dry_run):
+    """Fix file ownership in HuggingFace cache on cluster hosts.
+
+    Docker containers create files as root in ~/.cache/huggingface/,
+    leaving the normal user unable to manage or clean the cache.
+    This command runs chown on all target hosts to restore ownership.
+
+    Tries non-interactive sudo first on all hosts in parallel, then
+    falls back to password-based sudo for any that fail.
+
+    Use --save-sudo to install a scoped sudoers entry so future runs
+    never need a password. The entry only permits chown on the cache
+    directory — no broader privileges are granted.
+
+    Examples:
+
+      sparkrun setup fix-permissions --hosts 10.24.11.13,10.24.11.14
+
+      sparkrun setup fix-permissions --cluster mylab
+
+      sparkrun setup fix-permissions --cluster mylab --cache-dir /data/hf-cache
+
+      sparkrun setup fix-permissions --cluster mylab --save-sudo
+
+      sparkrun setup fix-permissions --cluster mylab --dry-run
+    """
+    from sparkrun.config import SparkrunConfig
+    from sparkrun.orchestration.sudo import run_with_sudo_fallback
+    from sparkrun.orchestration.ssh import run_remote_sudo_script
+
+    config = SparkrunConfig()
+    host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
+
+    # Resolve cache path
+    cache_path = cache_dir  # None means use getent-based home detection
+
+    click.echo("Fixing file permissions for user '%s' on %d host(s)..." % (user, len(host_list)))
+    if cache_path:
+        click.echo("Cache directory: %s" % cache_path)
+    click.echo()
+
+    sudo_password = None
+
+    from sparkrun.scripts import read_script
+
+    # --save-sudo: install scoped sudoers entry on each host
+    if save_sudo:
+        click.echo("Installing sudoers entry for passwordless chown...")
+        sudoers_script = read_script("fix_permissions_sudoers.sh").format(
+            user=user, cache_dir=cache_path or "",
+        )
+
+        if dry_run:
+            click.echo("  [dry-run] Would install sudoers entry on %d host(s):" % len(host_list))
+            for h in host_list:
+                click.echo("    %s: /etc/sudoers.d/sparkrun-chown-%s" % (h, user))
+            click.echo()
+        else:
+            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+            sudoers_ok = 0
+            sudoers_fail = 0
+            for h in host_list:
+                r = run_remote_sudo_script(
+                    h, sudoers_script, sudo_password, timeout=300, dry_run=False, **ssh_kwargs,
+                )
+                if r.success:
+                    sudoers_ok += 1
+                    click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
+                else:
+                    sudoers_fail += 1
+                    click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+            click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
+            click.echo()
+
+    # Generate the chown script with sudo -n (non-interactive).
+    # Uses getent passwd to resolve the target user's home directory,
+    # avoiding tilde/HOME ambiguity when running under sudo.
+    chown_script = read_script("fix_permissions.sh").format(
+        user=user, cache_dir=cache_path or "",
+    )
+
+    # Password-based fallback script (no sudo prefix — run_remote_sudo_script runs as root)
+    fallback_script = read_script("fix_permissions_fallback.sh").format(
+        user=user, cache_dir=cache_path or "",
+    )
+
+    # Try non-interactive sudo, then password-based fallback
+    if not dry_run and sudo_password is None:
+        # Prompt only if parallel run produces failures (deferred below)
+        pass
+
+    result_map, still_failed = run_with_sudo_fallback(
+        host_list, chown_script, fallback_script, ssh_kwargs,
+        dry_run=dry_run, sudo_password=sudo_password,
+    )
+
+    # If hosts failed without a password, prompt and retry
+    if still_failed and not dry_run:
+        if sudo_password is None:
+            click.echo("Sudo password required for %d host(s)." % len(still_failed))
+            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+            # Re-run fallback with the password for failed hosts
+            result_map, still_failed = run_with_sudo_fallback(
+                still_failed, chown_script, fallback_script, ssh_kwargs,
+                dry_run=dry_run, sudo_password=sudo_password,
+            )
+
+        # Retry individually on per-host sudo failures
+        if still_failed and sudo_password:
+            click.echo()
+            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
+            for fhost in still_failed:
+                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
+                retry_result = run_remote_sudo_script(
+                    fhost, fallback_script, per_host_pw, timeout=300, dry_run=dry_run, **ssh_kwargs,
+                )
+                result_map[fhost] = retry_result
+
+    # Report results
+    ok_count = 0
+    skip_count = 0
+    fail_count = 0
+    for h in host_list:
+        r = result_map.get(h)
+        if r is None:
+            continue
+        if r.success:
+            if "SKIP:" in r.stdout:
+                skip_count += 1
+                click.echo("  [SKIP] %s: %s" % (h, r.stdout.strip()))
+            else:
+                ok_count += 1
+                click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
+        else:
+            fail_count += 1
+            click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+
+    click.echo()
+    parts = []
+    if ok_count:
+        parts.append("%d fixed" % ok_count)
+    if skip_count:
+        parts.append("%d skipped (no cache)" % skip_count)
+    if fail_count:
+        parts.append("%d failed" % fail_count)
+    click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
+
+    if fail_count:
+        sys.exit(1)
+
+
+@setup.command("clear-cache")
+@host_options
+@click.option("--user", "-u", default=None, help="Target user for sudoers entry (default: SSH user)")
+@click.option("--save-sudo", is_flag=True, default=False,
+              help="Install sudoers entry for passwordless cache clearing (requires sudo once)")
+@dry_run_option
+@click.pass_context
+def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry_run):
+    """Drop the Linux page cache on cluster hosts.
+
+    Runs 'sync' followed by writing 3 to /proc/sys/vm/drop_caches on
+    each target host.  This frees cached file data so inference
+    containers have maximum available memory on DGX Spark's unified
+    CPU/GPU memory.
+
+    Tries non-interactive sudo first on all hosts in parallel, then
+    falls back to password-based sudo for any that fail.
+
+    Use --save-sudo to install a scoped sudoers entry so future runs
+    never need a password. The entry only permits writing to
+    /proc/sys/vm/drop_caches — no broader privileges are granted.
+
+    Examples:
+
+      sparkrun setup clear-cache --hosts 10.24.11.13,10.24.11.14
+
+      sparkrun setup clear-cache --cluster mylab
+
+      sparkrun setup clear-cache --cluster mylab --save-sudo
+
+      sparkrun setup clear-cache --cluster mylab --dry-run
+    """
+    from sparkrun.config import SparkrunConfig
+    from sparkrun.orchestration.sudo import run_with_sudo_fallback
+    from sparkrun.orchestration.ssh import run_remote_sudo_script
+
+    config = SparkrunConfig()
+    host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
+
+    click.echo("Clearing page cache on %d host(s)..." % len(host_list))
+    click.echo()
+
+    sudo_password = None
+
+    from sparkrun.scripts import read_script
+
+    # --save-sudo: install scoped sudoers entry on each host
+    if save_sudo:
+        click.echo("Installing sudoers entry for passwordless cache clearing...")
+        sudoers_script = read_script("clear_cache_sudoers.sh").format(user=user)
+
+        if dry_run:
+            click.echo("  [dry-run] Would install sudoers entry on %d host(s):" % len(host_list))
+            for h in host_list:
+                click.echo("    %s: /etc/sudoers.d/sparkrun-dropcaches-%s" % (h, user))
+            click.echo()
+        else:
+            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+            sudoers_ok = 0
+            sudoers_fail = 0
+            for h in host_list:
+                r = run_remote_sudo_script(
+                    h, sudoers_script, sudo_password, timeout=300, dry_run=False, **ssh_kwargs,
+                )
+                if r.success:
+                    sudoers_ok += 1
+                    click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
+                else:
+                    sudoers_fail += 1
+                    click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+            click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
+            click.echo()
+
+    # Generate the drop_caches script with sudo -n (non-interactive).
+    drop_script = read_script("clear_cache.sh")
+
+    # Password-based fallback script (no sudo — run_remote_sudo_script runs as root)
+    fallback_script = read_script("clear_cache_fallback.sh")
+
+    # Try non-interactive sudo, then password-based fallback
+    result_map, still_failed = run_with_sudo_fallback(
+        host_list, drop_script, fallback_script, ssh_kwargs,
+        dry_run=dry_run, sudo_password=sudo_password,
+    )
+
+    # If hosts failed without a password, prompt and retry
+    if still_failed and not dry_run:
+        if sudo_password is None:
+            click.echo("Sudo password required for %d host(s)." % len(still_failed))
+            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+            result_map, still_failed = run_with_sudo_fallback(
+                still_failed, drop_script, fallback_script, ssh_kwargs,
+                dry_run=dry_run, sudo_password=sudo_password,
+            )
+
+        # Retry individually on per-host sudo failures
+        if still_failed and sudo_password:
+            click.echo()
+            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
+            for fhost in still_failed:
+                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
+                retry_result = run_remote_sudo_script(
+                    fhost, fallback_script, per_host_pw, timeout=300, dry_run=dry_run, **ssh_kwargs,
+                )
+                result_map[fhost] = retry_result
+
+    # Report results
+    ok_count = 0
+    fail_count = 0
+    for h in host_list:
+        r = result_map.get(h)
+        if r is None:
+            continue
+        if r.success:
+            ok_count += 1
+            click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
+        else:
+            fail_count += 1
+            click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+
+    click.echo()
+    parts = []
+    if ok_count:
+        parts.append("%d cleared" % ok_count)
+    if fail_count:
+        parts.append("%d failed" % fail_count)
+    click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
+
+    if fail_count:
         sys.exit(1)
 
 
 @main.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
-@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
-@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
-@click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
+@host_options
 @click.option("--tp", "--tensor-parallel", "tp_override", type=int, default=None, help="Tensor parallel (to match host trimming from run)")
-@click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
+@dry_run_option
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
 def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, dry_run, config_path=None):
@@ -1286,21 +1510,13 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, dry_run
     host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
 
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
-    from sparkrun.orchestration.docker import generate_container_name, generate_cluster_id
+    from sparkrun.orchestration.docker import enumerate_cluster_containers
+    from sparkrun.orchestration.job_metadata import generate_cluster_id
 
     cluster_id = generate_cluster_id(recipe, host_list)
     ssh_kwargs = build_ssh_kwargs(config)
 
-    # Build list of all possible container names for this cluster_id
-    # (covers solo, Ray head/worker, and native node_N patterns)
-    container_names = [
-        generate_container_name(cluster_id, "solo"),
-        generate_container_name(cluster_id, "head"),
-        generate_container_name(cluster_id, "worker"),
-    ]
-    # Add per-rank node containers for native clustering
-    for rank in range(len(host_list)):
-        container_names.append("%s_node_%d" % (cluster_id, rank))
+    container_names = enumerate_cluster_containers(cluster_id, len(host_list))
 
     from sparkrun.hosts import is_local_host
     is_local = len(host_list) == 1 and is_local_host(host_list[0])
@@ -1315,9 +1531,7 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, dry_run
 
 @main.command("logs")
 @click.argument("recipe_name", type=RECIPE_NAME)
-@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
-@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
-@click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
+@host_options
 @click.option("--tp", "--tensor-parallel", "tp_override", type=int, default=None, help="Tensor parallel (to match host trimming from run)")
 @click.option("--tail", type=int, default=100, help="Number of log lines before following")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
@@ -1335,7 +1549,7 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
     """
     from sparkrun.bootstrap import init_sparkrun, get_runtime
     from sparkrun.config import SparkrunConfig
-    from sparkrun.orchestration.docker import generate_cluster_id
+    from sparkrun.orchestration.job_metadata import generate_cluster_id
 
     v = init_sparkrun()
     _setup_logging(ctx.obj["verbose"])
@@ -1554,10 +1768,8 @@ def cluster_default(ctx):
 
 
 @cluster.command("status")
-@click.option("--hosts", "-H", default=None, help="Comma-separated host list")
-@click.option("--hosts-file", default=None, help="File with hosts (one per line, # comments)")
-@click.option("--cluster", "cluster_name", default=None, help="Use a saved cluster by name")
-@click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")
+@host_options
+@dry_run_option
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
 def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=None):
@@ -1573,10 +1785,8 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
       sparkrun cluster status --cluster mylab
     """
     from sparkrun.config import SparkrunConfig
-    from sparkrun.cluster_manager import (
-        query_cluster_status,
-        format_job_label, format_job_commands, format_host_display,
-    )
+    from sparkrun.cluster_manager import query_cluster_status
+    from sparkrun.utils.cli_formatters import format_job_label, format_job_commands, format_host_display
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
@@ -1615,7 +1825,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
 
     # Display solo / ungrouped containers
     if result.solo_entries:
-        from sparkrun.orchestration.docker import load_job_metadata
+        from sparkrun.orchestration.job_metadata import load_job_metadata
         for host, name, status, image in result.solo_entries:
             cid = name.removesuffix("_solo")
             meta = load_job_metadata(cid, cache_dir=str(config.cache_dir)) or {}
@@ -1684,7 +1894,8 @@ def recipe(ctx):
 @click.pass_context
 def recipe_list(ctx, registry, runtime, query, config_path=None):
     """List available recipes from all registries."""
-    from sparkrun.recipe import list_recipes, filter_recipes, format_recipe_table
+    from sparkrun.recipe import list_recipes, filter_recipes
+    from sparkrun.utils.cli_formatters import format_recipe_table
 
     config, registry_mgr = _get_config_and_registry(config_path)
     registry_mgr.ensure_initialized()
@@ -1706,7 +1917,8 @@ def recipe_list(ctx, registry, runtime, query, config_path=None):
 @click.pass_context
 def recipe_search(ctx, registry, runtime, query, config_path=None):
     """Search for recipes by name, model, or description."""
-    from sparkrun.recipe import filter_recipes, format_recipe_table
+    from sparkrun.recipe import filter_recipes
+    from sparkrun.utils.cli_formatters import format_recipe_table
 
     config, registry_mgr = _get_config_and_registry(config_path)
     registry_mgr.ensure_initialized()

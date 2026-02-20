@@ -4,7 +4,7 @@ import re
 from unittest import mock
 
 import pytest
-from sparkrun.orchestration.docker import generate_cluster_id
+from sparkrun.orchestration.job_metadata import generate_cluster_id
 from sparkrun.recipe import Recipe
 from sparkrun.runtimes.vllm import VllmRuntime
 from sparkrun.runtimes.sglang import SglangRuntime
@@ -485,9 +485,9 @@ class _StubRuntime(RuntimePlugin):
 class TestBaseFollowLogs:
     """Test base RuntimePlugin.follow_logs()."""
 
-    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
     def test_follow_logs_solo(self, mock_stream):
-        """Base follow_logs calls stream_remote_logs with solo container name."""
+        """Base follow_logs calls stream_container_file_logs with solo container name."""
         runtime = _StubRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1"],
@@ -502,7 +502,7 @@ class TestBaseFollowLogs:
             tail=50, dry_run=False,
         )
 
-    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
     def test_follow_logs_localhost_default(self, mock_stream):
         """Base follow_logs with empty hosts uses localhost."""
         runtime = _StubRuntime()
@@ -512,6 +512,20 @@ class TestBaseFollowLogs:
         args = mock_stream.call_args
         assert args[0][0] == "localhost"
         assert args[0][1] == "sparkrun0_solo"
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    def test_follow_logs_cluster_uses_docker_logs(self, mock_stream):
+        """Base _follow_cluster_logs streams docker logs on head node."""
+        runtime = _StubRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1", "10.0.0.2"],
+            cluster_id="test0",
+        )
+
+        mock_stream.assert_called_once()
+        args = mock_stream.call_args
+        assert args[0][0] == "10.0.0.1"
+        assert args[0][1] == "test0_head"
 
 
 class TestVllmFollowLogs:

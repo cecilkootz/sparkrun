@@ -60,12 +60,6 @@ class LlamaCppRuntime(RuntimePlugin):
     runtime_name = "llama-cpp"
     default_image_prefix = "scitrera/dgx-spark-llama-cpp"
 
-    def resolve_container(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> str:
-        """Resolve the container image to use for llama.cpp."""
-        if recipe.container:
-            return recipe.container
-        return "%s:latest" % self.default_image_prefix
-
     def cluster_strategy(self) -> str:
         """llama.cpp uses native RPC-based distribution, not Ray."""
         return "native"
@@ -148,112 +142,22 @@ class LlamaCppRuntime(RuntimePlugin):
         """Validate llama.cpp-specific recipe fields."""
         return super().validate_recipe(recipe)
 
-    # --- Log following ---
+    # --- Log following hooks ---
 
-    def follow_logs(
+    def _head_container_name(self, cluster_id: str) -> str:
+        """llama.cpp names the head container ``{cluster_id}_head``."""
+        return self._container_name(cluster_id, "head")
+
+    # --- Cluster stop ---
+
+    def _stop_cluster(
             self,
             hosts: list[str],
-            cluster_id: str = "sparkrun0",
-            config=None,
-            dry_run: bool = False,
-            tail: int = 100,
-    ) -> None:
-        """Follow serve logs for a llama.cpp container.
-
-        Solo mode uses ``stream_container_file_logs`` (sleep infinity +
-        exec pattern writes to ``/tmp/sparkrun_serve.log``).
-
-        Cluster mode uses ``stream_remote_logs`` (docker logs) on the
-        head container since the serve command runs as the container
-        entrypoint.
-        """
-        from sparkrun.orchestration.primitives import build_ssh_kwargs
-
-        if len(hosts) <= 1:
-            from sparkrun.orchestration.docker import generate_container_name
-            from sparkrun.orchestration.ssh import stream_container_file_logs
-
-            host = hosts[0] if hosts else "localhost"
-            container_name = generate_container_name(cluster_id, "solo")
-            ssh_kwargs = build_ssh_kwargs(config)
-
-            stream_container_file_logs(
-                host, container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
-            )
-            return
-
-        # Cluster mode: head runs as container entrypoint -> docker logs
-        from sparkrun.orchestration.ssh import stream_remote_logs
-
-        head_host = hosts[0]
-        container_name = self._container_name(cluster_id, "head")
-        ssh_kwargs = build_ssh_kwargs(config)
-
-        stream_remote_logs(
-            head_host, container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
-        )
-
-    # --- Launch / Stop ---
-
-    def run(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config=None,
-            dry_run: bool = False,
-            detached: bool = True,
-            skip_ib_detect: bool = False,
-            nccl_env: dict[str, str] | None = None,
-            ib_ip_map: dict[str, str] | None = None,
-            rpc_port: int = _DEFAULT_RPC_PORT,
-            **kwargs,
-    ) -> int:
-        """Launch a llama.cpp workload — solo or RPC cluster.
-
-        For a single host, delegates to the base solo implementation.
-        For multiple hosts, orchestrates an RPC cluster: workers run
-        ``rpc-server``, then the head runs ``llama-server --rpc ...``.
-
-        .. note:: Multi-node support is experimental.
-        """
-        if len(hosts) <= 1:
-            return self._run_solo(
-                host=hosts[0] if hosts else "localhost",
-                image=image, serve_command=serve_command,
-                cluster_id=cluster_id, env=env, cache_dir=cache_dir,
-                config=config, dry_run=dry_run, detached=detached,
-                skip_ib_detect=skip_ib_detect, nccl_env=nccl_env,
-            )
-
-        return self._run_rpc_cluster(
-            hosts=hosts, image=image, recipe=recipe, overrides=overrides,
-            cluster_id=cluster_id, rpc_port=rpc_port, env=env,
-            cache_dir=cache_dir, config=config, dry_run=dry_run,
-            skip_ib_detect=skip_ib_detect, nccl_env=nccl_env,
-            ib_ip_map=ib_ip_map,
-        )
-
-    def stop(
-            self,
-            hosts: list[str],
-            cluster_id: str = "sparkrun0",
+            cluster_id: str,
             config=None,
             dry_run: bool = False,
     ) -> int:
-        """Stop a llama.cpp workload — solo or RPC cluster."""
-        if len(hosts) <= 1:
-            return self._stop_solo(
-                host=hosts[0] if hosts else "localhost",
-                cluster_id=cluster_id, config=config, dry_run=dry_run,
-            )
-
+        """Stop a llama.cpp RPC cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs
         from sparkrun.orchestration.ssh import run_remote_command
         from sparkrun.orchestration.docker import docker_stop_cmd
@@ -283,21 +187,27 @@ class LlamaCppRuntime(RuntimePlugin):
         """Generate container name: ``{cluster_id}_{role}``."""
         return "%s_%s" % (cluster_id, role)
 
-    def _run_rpc_cluster(
+    # --- Cluster launch ---
+
+    def _run_cluster(
             self,
             hosts: list[str],
             image: str,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            cluster_id: str,
-            rpc_port: int,
-            env: dict[str, str] | None,
-            cache_dir: str | None,
-            config,
-            dry_run: bool,
-            skip_ib_detect: bool,
+            serve_command: str = "",
+            recipe=None,
+            overrides=None,
+            *,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config=None,
+            dry_run: bool = False,
+            detached: bool = True,
+            skip_ib_detect: bool = False,
             nccl_env: dict[str, str] | None = None,
             ib_ip_map: dict[str, str] | None = None,
+            rpc_port: int = _DEFAULT_RPC_PORT,
+            **kwargs,
     ) -> int:
         """Orchestrate a multi-node llama.cpp cluster using RPC.
 
@@ -320,7 +230,7 @@ class LlamaCppRuntime(RuntimePlugin):
         )
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_command
-        from sparkrun.orchestration.docker import docker_run_cmd, docker_stop_cmd
+        from sparkrun.orchestration.docker import docker_stop_cmd
 
         logger.warning(
             "llama.cpp RPC clustering is EXPERIMENTAL. "
@@ -335,7 +245,10 @@ class LlamaCppRuntime(RuntimePlugin):
         volumes = build_volumes(cache_dir)
         all_env = merge_env(env)
 
-        self._print_rpc_banner(hosts, image, cluster_id, rpc_port, dry_run)
+        self._print_cluster_banner(
+            "llama.cpp RPC Cluster Launcher (EXPERIMENTAL)", hosts, image, cluster_id,
+            {"RPC Port": rpc_port}, dry_run,
+        )
 
         # Step 1: Cleanup
         t0 = time.monotonic()
@@ -396,8 +309,8 @@ class LlamaCppRuntime(RuntimePlugin):
                 for host in worker_hosts:
                     script = self._generate_node_script(
                         image=image, container_name=worker_container_name,
-                        serve_command=rpc_worker_command, env=all_env,
-                        volumes=volumes, nccl_env=nccl_env,
+                        serve_command=rpc_worker_command, label="llama.cpp node",
+                        env=all_env, volumes=volumes, nccl_env=nccl_env,
                     )
                     future = executor.submit(
                         run_remote_script, host, script,
@@ -418,7 +331,7 @@ class LlamaCppRuntime(RuntimePlugin):
         else:
             logger.info("Step 3/5: No worker hosts, skipping")
 
-        # Step 4: Wait for RPC ports (probe via management IPs — SSH
+        # Step 4: Wait for RPC ports (probe via management IPs -- SSH
         # connectivity is guaranteed there; the IB IPs are used for the
         # actual RPC data path in step 5)
         t0 = time.monotonic()
@@ -452,8 +365,8 @@ class LlamaCppRuntime(RuntimePlugin):
 
         head_script = self._generate_node_script(
             image=image, container_name=head_container,
-            serve_command=head_command, env=all_env,
-            volumes=volumes, nccl_env=nccl_env,
+            serve_command=head_command, label="llama.cpp node",
+            env=all_env, volumes=volumes, nccl_env=nccl_env,
         )
         head_result = run_remote_script(
             head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
@@ -463,83 +376,5 @@ class LlamaCppRuntime(RuntimePlugin):
             return 1
         logger.info("Step 5/5: Head launched (%.1fs)", time.monotonic() - t0)
 
-        self._print_rpc_connection_info(hosts, cluster_id, head_host, rpc_port)
+        self._print_connection_info(hosts, cluster_id)
         return 0
-
-    @staticmethod
-    def _generate_node_script(
-            image: str,
-            container_name: str,
-            serve_command: str,
-            env: dict[str, str] | None = None,
-            volumes: dict[str, str] | None = None,
-            nccl_env: dict[str, str] | None = None,
-    ) -> str:
-        """Generate a script that launches a llama.cpp node directly.
-
-        The serve command runs as the container entrypoint (not sleep
-        infinity + exec).  Used for both RPC workers and the head node
-        in cluster mode.
-        """
-        from sparkrun.orchestration.docker import docker_run_cmd, docker_stop_cmd
-        from sparkrun.orchestration.primitives import merge_env
-
-        all_env = merge_env(nccl_env, env)
-        cleanup = docker_stop_cmd(container_name)
-        run_cmd = docker_run_cmd(
-            image=image,
-            command=serve_command,
-            container_name=container_name,
-            detach=True,
-            env=all_env,
-            volumes=volumes,
-        )
-
-        return (
-            "#!/bin/bash\n"
-            "set -uo pipefail\n"
-            "\n"
-            "echo 'Cleaning up existing container: %(name)s'\n"
-            "%(cleanup)s\n"
-            "\n"
-            "echo 'Launching llama.cpp node: %(name)s'\n"
-            "%(run_cmd)s\n"
-            "\n"
-            "# Verify container started\n"
-            "sleep 1\n"
-            "if docker ps --format '{{.Names}}' | grep -q '^%(name)s$'; then\n"
-            "    echo 'Container %(name)s launched successfully'\n"
-            "else\n"
-            "    echo 'ERROR: Container %(name)s failed to start' >&2\n"
-            "    docker logs %(name)s 2>&1 | tail -20 || true\n"
-            "    exit 1\n"
-            "fi\n"
-        ) % {"name": container_name, "cleanup": cleanup, "run_cmd": run_cmd}
-
-    def _print_rpc_banner(self, hosts, image, cluster_id, rpc_port, dry_run):
-        mode = "DRY-RUN" if dry_run else "LIVE"
-        logger.info("=" * 60)
-        logger.info("sparkrun llama.cpp RPC Cluster Launcher (EXPERIMENTAL)")
-        logger.info("=" * 60)
-        logger.info("Cluster ID:     %s", cluster_id)
-        logger.info("Image:          %s", image)
-        logger.info("Head Node:      %s", hosts[0])
-        logger.info(
-            "Worker Nodes:   %s",
-            ", ".join(hosts[1:]) if len(hosts) > 1 else "<none>",
-        )
-        logger.info("RPC Port:       %d", rpc_port)
-        logger.info("Mode:           %s", mode)
-        logger.info("=" * 60)
-
-    def _print_rpc_connection_info(self, hosts, cluster_id, head_host, rpc_port):
-        logger.info("=" * 60)
-        logger.info("llama.cpp RPC cluster launched successfully.")
-        logger.info("Nodes: %d", len(hosts))
-        logger.info("")
-        logger.info("To view head logs:")
-        logger.info("  sparkrun logs <recipe> --hosts %s", ",".join(hosts))
-        logger.info("")
-        logger.info("To stop cluster:")
-        logger.info("  sparkrun stop <recipe> --hosts %s", ",".join(hosts))
-        logger.info("=" * 60)

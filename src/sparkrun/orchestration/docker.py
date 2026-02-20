@@ -8,10 +8,6 @@ They do not execute Docker commands directly.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from sparkrun.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
@@ -176,92 +172,6 @@ def docker_logs_cmd(
     return " ".join(parts)
 
 
-def generate_cluster_id(recipe: "Recipe", hosts: list[str]) -> str:
-    """Deterministic cluster identifier from recipe and host set.
-
-    Takes the full Recipe and host list so the hash inputs can be
-    expanded later (e.g. adding port, tensor_parallel) without
-    changing the function signature.
-
-    Currently hashes: runtime + model + sorted hosts.
-    """
-    import hashlib
-
-    parts = [recipe.runtime, recipe.model] + sorted(hosts)
-    key = "\0".join(parts)
-    digest = hashlib.sha256(key.encode()).hexdigest()[:12]
-    return "sparkrun_%s" % digest
-
-
-def save_job_metadata(
-    cluster_id: str,
-    recipe: "Recipe",
-    hosts: list[str],
-    overrides: dict | None = None,
-    cache_dir: str | None = None,
-    ib_ip_map: dict[str, str] | None = None,
-    mgmt_ip_map: dict[str, str] | None = None,
-) -> None:
-    """Persist job metadata so ``cluster status`` can display recipe info.
-
-    Writes a small YAML file to ``{cache_dir}/jobs/{hash}.yaml`` where
-    *hash* is the 12-char hex portion of *cluster_id*.
-    """
-    from pathlib import Path
-    import yaml
-
-    if cache_dir is None:
-        from sparkrun.config import DEFAULT_CACHE_DIR
-        cache_dir = str(DEFAULT_CACHE_DIR)
-
-    digest = cluster_id.removeprefix("sparkrun_")
-    jobs_dir = Path(cache_dir) / "jobs"
-    jobs_dir.mkdir(parents=True, exist_ok=True)
-
-    tp = None
-    if overrides:
-        tp = overrides.get("tensor_parallel")
-    if tp is None and recipe.defaults:
-        tp = recipe.defaults.get("tensor_parallel")
-
-    meta = {
-        "cluster_id": cluster_id,
-        "recipe": recipe.name,
-        "model": recipe.model,
-        "runtime": recipe.runtime,
-        "hosts": hosts,
-    }
-    if tp is not None:
-        meta["tensor_parallel"] = int(tp)
-    if ib_ip_map:
-        meta["ib_ip_map"] = ib_ip_map
-    if mgmt_ip_map:
-        meta["mgmt_ip_map"] = mgmt_ip_map
-
-    meta_path = jobs_dir / f"{digest}.yaml"
-    with open(meta_path, "w") as f:
-        yaml.safe_dump(meta, f, default_flow_style=False)
-    logger.debug("Saved job metadata to %s", meta_path)
-
-
-def load_job_metadata(cluster_id: str, cache_dir: str | None = None) -> dict | None:
-    """Load job metadata for a cluster_id.  Returns ``None`` if not found."""
-    from pathlib import Path
-    import yaml
-
-    if cache_dir is None:
-        from sparkrun.config import DEFAULT_CACHE_DIR
-        cache_dir = str(DEFAULT_CACHE_DIR)
-
-    digest = cluster_id.removeprefix("sparkrun_")
-    meta_path = Path(cache_dir) / "jobs" / f"{digest}.yaml"
-    if not meta_path.exists():
-        return None
-    try:
-        with open(meta_path) as f:
-            return yaml.safe_load(f)
-    except Exception:
-        return None
 
 
 def generate_container_name(cluster_id: str, role: str = "head") -> str:
@@ -275,3 +185,28 @@ def generate_container_name(cluster_id: str, role: str = "head") -> str:
         Container name in the form ``{cluster_id}_{role}``.
     """
     return f"{cluster_id}_{role}"
+
+
+def enumerate_cluster_containers(cluster_id: str, num_hosts: int) -> list[str]:
+    """Return all possible container names for a cluster.
+
+    Covers solo, Ray (head/worker), and native (node_N) patterns so
+    callers can clean up containers regardless of the runtime that
+    created them.
+
+    Args:
+        cluster_id: Cluster identifier (e.g. ``sparkrun0``).
+        num_hosts: Number of hosts in the cluster (used to generate
+            native ``node_N`` names).
+
+    Returns:
+        List of container name strings.
+    """
+    names = [
+        generate_container_name(cluster_id, "solo"),
+        generate_container_name(cluster_id, "head"),
+        generate_container_name(cluster_id, "worker"),
+    ]
+    for rank in range(num_hosts):
+        names.append("%s_node_%d" % (cluster_id, rank))
+    return names

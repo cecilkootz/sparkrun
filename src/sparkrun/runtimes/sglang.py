@@ -45,12 +45,6 @@ class SglangRuntime(RuntimePlugin):
     runtime_name = "sglang"
     default_image_prefix = "scitrera/dgx-spark-sglang"
 
-    def resolve_container(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> str:
-        """Resolve the container image to use for SGLang."""
-        if recipe.container:
-            return recipe.container
-        return "%s:latest" % self.default_image_prefix
-
     def cluster_strategy(self) -> str:
         """SGLang uses native multi-node distribution, not Ray."""
         return "native"
@@ -188,107 +182,22 @@ class SglangRuntime(RuntimePlugin):
 
         return issues
 
-    # --- Log following ---
+    # --- Log following hooks ---
 
-    def follow_logs(
+    def _head_container_name(self, cluster_id: str) -> str:
+        """SGLang names the head container ``{cluster_id}_node_0``."""
+        return self._container_name(cluster_id, 0)
+
+    # --- Cluster stop ---
+
+    def _stop_cluster(
             self,
             hosts: list[str],
-            cluster_id: str = "sparkrun0",
-            config=None,
-            dry_run: bool = False,
-            tail: int = 100,
-    ) -> None:
-        """Follow serve logs — solo or native cluster head (node_0).
-
-        Solo mode uses ``_run_solo`` which launches ``sleep infinity`` and
-        exec's the serve command with output to ``/tmp/sparkrun_serve.log``,
-        so we tail that file inside the container (same as vLLM).
-
-        Cluster mode runs the serve command directly as the container
-        entrypoint, so ``docker logs`` is correct.
-        """
-        from sparkrun.orchestration.primitives import build_ssh_kwargs
-
-        if len(hosts) <= 1:
-            from sparkrun.orchestration.docker import generate_container_name
-            from sparkrun.orchestration.ssh import stream_container_file_logs
-
-            host = hosts[0] if hosts else "localhost"
-            container_name = generate_container_name(cluster_id, "solo")
-            ssh_kwargs = build_ssh_kwargs(config)
-
-            stream_container_file_logs(
-                host, container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
-            )
-            return
-
-        from sparkrun.orchestration.ssh import stream_remote_logs
-
-        head_host = hosts[0]
-        container_name = self._container_name(cluster_id, 0)
-        ssh_kwargs = build_ssh_kwargs(config)
-
-        stream_remote_logs(
-            head_host, container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
-        )
-
-    # --- Launch / Stop ---
-
-    def run(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config=None,
-            dry_run: bool = False,
-            detached: bool = True,
-            skip_ib_detect: bool = False,
-            nccl_env: dict[str, str] | None = None,
-            init_port: int = 25000,
-            **kwargs,
-    ) -> int:
-        """Launch an SGLang workload — solo or native cluster.
-
-        For a single host, delegates to the base solo implementation.
-        For multiple hosts, orchestrates a native SGLang cluster where
-        each node runs the full serve command with per-node rank args.
-        """
-        if len(hosts) <= 1:
-            return self._run_solo(
-                host=hosts[0] if hosts else "localhost",
-                image=image, serve_command=serve_command,
-                cluster_id=cluster_id, env=env, cache_dir=cache_dir,
-                config=config, dry_run=dry_run, detached=detached,
-                skip_ib_detect=skip_ib_detect, nccl_env=nccl_env,
-            )
-
-        return self._run_native_cluster(
-            hosts=hosts, image=image, recipe=recipe, overrides=overrides,
-            cluster_id=cluster_id, init_port=init_port, env=env,
-            cache_dir=cache_dir, config=config, dry_run=dry_run,
-            skip_ib_detect=skip_ib_detect, nccl_env=nccl_env,
-        )
-
-    def stop(
-            self,
-            hosts: list[str],
-            cluster_id: str = "sparkrun0",
+            cluster_id: str,
             config=None,
             dry_run: bool = False,
     ) -> int:
-        """Stop an SGLang workload — solo or native cluster."""
-        if len(hosts) <= 1:
-            return self._stop_solo(
-                host=hosts[0] if hosts else "localhost",
-                cluster_id=cluster_id, config=config, dry_run=dry_run,
-            )
-
+        """Stop an SGLang native cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs
         from sparkrun.orchestration.ssh import run_remote_command
         from sparkrun.orchestration.docker import docker_stop_cmd
@@ -309,20 +218,26 @@ class SglangRuntime(RuntimePlugin):
         """Generate container name: ``{cluster_id}_node_{rank}``."""
         return "%s_node_%d" % (cluster_id, rank)
 
-    def _run_native_cluster(
+    # --- Cluster launch ---
+
+    def _run_cluster(
             self,
             hosts: list[str],
             image: str,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            cluster_id: str,
-            init_port: int,
-            env: dict[str, str] | None,
-            cache_dir: str | None,
-            config,
-            dry_run: bool,
-            skip_ib_detect: bool,
+            serve_command: str = "",
+            recipe=None,
+            overrides=None,
+            *,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config=None,
+            dry_run: bool = False,
+            detached: bool = True,
+            skip_ib_detect: bool = False,
             nccl_env: dict[str, str] | None = None,
+            init_port: int = 25000,
+            **kwargs,
     ) -> int:
         """Orchestrate a multi-node SGLang cluster using native distribution.
 
@@ -340,12 +255,12 @@ class SglangRuntime(RuntimePlugin):
             build_ssh_kwargs,
             build_volumes,
             merge_env,
-            detect_infiniband,
             detect_host_ip,
             wait_for_port,
+            resolve_nccl_env,
         )
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_command
-        from sparkrun.orchestration.docker import docker_run_cmd, docker_stop_cmd
+        from sparkrun.orchestration.docker import docker_stop_cmd
 
         num_nodes = len(hosts)
         head_host = hosts[0]
@@ -355,7 +270,10 @@ class SglangRuntime(RuntimePlugin):
         runtime_env = self.get_cluster_env(head_ip="<pending>", num_nodes=num_nodes)
         all_env = merge_env(env, runtime_env)
 
-        self._print_native_banner(hosts, image, cluster_id, init_port, dry_run)
+        self._print_cluster_banner(
+            "SGLang Cluster Launcher", hosts, image, cluster_id,
+            {"Init Port": init_port}, dry_run,
+        )
 
         # Step 1: Cleanup
         t0 = time.monotonic()
@@ -370,19 +288,12 @@ class SglangRuntime(RuntimePlugin):
 
         # Step 2: InfiniBand detection (skip if pre-detected nccl_env provided)
         t0 = time.monotonic()
-        if nccl_env is not None:
-            logger.info("Step 2/6: Using pre-detected NCCL env (%d vars)", len(nccl_env))
-        elif not skip_ib_detect:
-            nccl_env = {}
-            logger.info("Step 2/6: Detecting InfiniBand on all hosts...")
-            nccl_env = detect_infiniband(
-                hosts, head_host=head_host,
-                ssh_kwargs=ssh_kwargs, dry_run=dry_run,
-            )
-            logger.info("Step 2/6: IB detection done (%.1fs)", time.monotonic() - t0)
-        else:
-            nccl_env = {}
-            logger.info("Step 2/6: Skipping InfiniBand detection")
+        logger.info("Step 2/6: InfiniBand detection...")
+        nccl_env = resolve_nccl_env(
+            nccl_env, skip_ib_detect, hosts,
+            head_host=head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+        )
+        logger.info("Step 2/6: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Step 3: Detect head node IP
         t0 = time.monotonic()
@@ -414,8 +325,8 @@ class SglangRuntime(RuntimePlugin):
         )
         head_script = self._generate_node_script(
             image=image, container_name=head_container,
-            serve_command=head_command, env=all_env,
-            volumes=volumes, nccl_env=nccl_env,
+            serve_command=head_command, label="sglang node",
+            env=all_env, volumes=volumes, nccl_env=nccl_env,
         )
         head_result = run_remote_script(
             head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
@@ -464,8 +375,8 @@ class SglangRuntime(RuntimePlugin):
                     worker_container = self._container_name(cluster_id, rank)
                     worker_script = self._generate_node_script(
                         image=image, container_name=worker_container,
-                        serve_command=worker_command, env=all_env,
-                        volumes=volumes, nccl_env=nccl_env,
+                        serve_command=worker_command, label="sglang node",
+                        env=all_env, volumes=volumes, nccl_env=nccl_env,
                     )
                     future = executor.submit(
                         run_remote_script, host, worker_script,
@@ -486,81 +397,16 @@ class SglangRuntime(RuntimePlugin):
         else:
             logger.info("Step 6/6: No worker hosts, skipping")
 
-        self._print_native_connection_info(hosts, cluster_id, head_host, head_ip, init_port)
+        self._print_connection_info(hosts, cluster_id)
         return 0
 
-    @staticmethod
-    def _generate_node_script(
-            image: str,
-            container_name: str,
-            serve_command: str,
-            env: dict[str, str] | None = None,
-            volumes: dict[str, str] | None = None,
-            nccl_env: dict[str, str] | None = None,
-    ) -> str:
-        """Generate a script that launches an sglang node directly.
-
-        Unlike the Ray approach, each sglang node runs the full serve
-        command as the container's entrypoint.
-        """
-        from sparkrun.orchestration.docker import docker_run_cmd, docker_stop_cmd
-        from sparkrun.orchestration.primitives import merge_env
-
-        all_env = merge_env(nccl_env, env)
-        cleanup = docker_stop_cmd(container_name)
-        run_cmd = docker_run_cmd(
-            image=image,
-            command=serve_command,
-            container_name=container_name,
-            detach=True,
-            env=all_env,
-            volumes=volumes,
-        )
-
-        return (
-            "#!/bin/bash\n"
-            "set -uo pipefail\n"
-            "\n"
-            "echo 'Cleaning up existing container: %(name)s'\n"
-            "%(cleanup)s\n"
-            "\n"
-            "echo 'Launching sglang node: %(name)s'\n"
-            "%(run_cmd)s\n"
-            "\n"
-            "# Verify container started\n"
-            "sleep 1\n"
-            "if docker ps --format '{{.Names}}' | grep -q '^%(name)s$'; then\n"
-            "    echo 'Container %(name)s launched successfully'\n"
-            "else\n"
-            "    echo 'ERROR: Container %(name)s failed to start' >&2\n"
-            "    docker logs %(name)s 2>&1 | tail -20 || true\n"
-            "    exit 1\n"
-            "fi\n"
-        ) % {"name": container_name, "cleanup": cleanup, "run_cmd": run_cmd}
-
-    def _print_native_banner(self, hosts, image, cluster_id, init_port, dry_run):
-        mode = "DRY-RUN" if dry_run else "LIVE"
+    def _print_connection_info(self, hosts, cluster_id):
+        """Print SGLang-specific connection info with per-node log commands."""
         logger.info("=" * 60)
-        logger.info("sparkrun SGLang Cluster Launcher")
-        logger.info("=" * 60)
-        logger.info("Cluster ID:     %s", cluster_id)
-        logger.info("Image:          %s", image)
-        logger.info("Nodes (%d):     %s", len(hosts), ", ".join(hosts))
-        logger.info("Head Node:      %s", hosts[0])
-        logger.info("Init Port:      %d", init_port)
-        logger.info("Mode:           %s", mode)
-        logger.info("=" * 60)
-
-    def _print_native_connection_info(self, hosts, cluster_id, head_host, head_ip, init_port):
-        logger.info("=" * 60)
-        logger.info("SGLang cluster launched successfully.")
-        logger.info("Nodes: %d", len(hosts))
+        logger.info("Cluster launched successfully. Nodes: %d", len(hosts))
         logger.info("")
-        logger.info("To view head logs:")
-        logger.info("  sparkrun logs <recipe> --hosts %s", ",".join(hosts))
-        logger.info("")
-        logger.info("To stop cluster:")
-        logger.info("  sparkrun stop <recipe> --hosts %s", ",".join(hosts))
+        logger.info("To view logs:    sparkrun logs <recipe> --hosts %s", ",".join(hosts))
+        logger.info("To stop cluster: sparkrun stop <recipe> --hosts %s", ",".join(hosts))
         logger.info("")
         for rank, host in enumerate(hosts):
             logger.info(

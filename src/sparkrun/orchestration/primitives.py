@@ -11,7 +11,8 @@ import logging
 import subprocess
 import time
 
-from sparkrun.config import SparkrunConfig, DEFAULT_HF_CACHE_DIR
+from sparkrun.config import SparkrunConfig, resolve_cache_dir
+from sparkrun.utils import is_valid_ip  # noqa: F401 — re-exported for callers
 from sparkrun.orchestration.ssh import (
     RemoteResult,
     run_remote_command,
@@ -61,7 +62,7 @@ def build_volumes(
     Returns:
         Merged volume dict.
     """
-    hf_cache = cache_dir or str(DEFAULT_HF_CACHE_DIR)
+    hf_cache = resolve_cache_dir(cache_dir)
     volumes: dict[str, str] = {hf_cache: "/root/.cache/huggingface"}
     if extra:
         volumes.update(extra)
@@ -75,6 +76,72 @@ def merge_env(*env_dicts: dict[str, str] | None) -> dict[str, str]:
         if d:
             merged.update(d)
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Resource sync helpers
+# ---------------------------------------------------------------------------
+
+def sync_resource_to_hosts(
+    script: str,
+    hosts: list[str],
+    resource_label: str,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    dry_run: bool = False,
+) -> list[str]:
+    """Run a sync script on all hosts in parallel and return failures.
+
+    Args:
+        script: Pre-formatted bash script to execute on each host.
+        hosts: Target hostnames or IPs.
+        resource_label: Human-readable label for log messages (e.g. "Model", "Image").
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        dry_run: If True, show what would be done without executing.
+
+    Returns:
+        List of hostnames where the sync failed.
+    """
+    results = run_remote_scripts_parallel(
+        hosts,
+        script,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        dry_run=dry_run,
+    )
+
+    failed = [r.host for r in results if not r.success]
+    if failed:
+        logger.warning("%s sync failed on hosts: %s", resource_label, failed)
+    else:
+        logger.info("%s synced to all %d hosts", resource_label, len(hosts))
+
+    return failed
+
+
+def map_transfer_failures(
+    results: list[RemoteResult],
+    transfer_hosts: list[str],
+    management_hosts: list[str],
+) -> list[str]:
+    """Map failed transfer-host results back to management hostnames.
+
+    When fast-network IPs (InfiniBand) are used for data transfer,
+    failures are reported against those IPs. This maps them back to
+    the corresponding management hostnames for user-facing reporting.
+
+    Args:
+        results: Remote execution results (keyed by transfer host).
+        transfer_hosts: IPs/hostnames used for the actual transfer.
+        management_hosts: Corresponding management hostnames for reporting.
+
+    Returns:
+        List of management hostnames where transfer failed.
+    """
+    xfer_to_host = dict(zip(transfer_hosts, management_hosts))
+    failed = [xfer_to_host.get(r.host, r.host) for r in results if not r.success]
+    return failed
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +214,92 @@ def detect_infiniband_local(
             result.stderr[:100],
         )
     return {}
+
+
+def resolve_nccl_env(
+        nccl_env: dict[str, str] | None,
+        skip_ib_detect: bool,
+        hosts: list[str],
+        head_host: str | None = None,
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+) -> dict[str, str]:
+    """Resolve NCCL environment: reuse pre-detected, detect, or skip.
+
+    Encapsulates the common 3-branch IB detection pattern used by
+    cluster launch methods.
+
+    Args:
+        nccl_env: Pre-detected NCCL env, or ``None`` to trigger detection.
+        skip_ib_detect: If True and *nccl_env* is None, skip detection.
+        hosts: Hosts to probe for InfiniBand.
+        head_host: Which host's IB config to use (defaults to hosts[0]).
+        ssh_kwargs: SSH connection parameters.
+        dry_run: Log without executing.
+
+    Returns:
+        Dict of NCCL environment variables (empty if no IB found or skipped).
+    """
+    if nccl_env is not None:
+        logger.info("Using pre-detected NCCL env (%d vars)", len(nccl_env))
+        return nccl_env
+    if not skip_ib_detect:
+        logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
+        return detect_infiniband(
+            hosts, head_host=head_host,
+            ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+        )
+    logger.info("Skipping InfiniBand detection")
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Host preparation (pre-launch)
+# ---------------------------------------------------------------------------
+
+def try_clear_page_cache(
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+) -> None:
+    """Best-effort drop of the Linux page cache on hosts before container launch.
+
+    Frees cached file data so GPU-intensive inference containers have
+    maximum available memory on DGX Spark's unified CPU/GPU memory.
+    Uses ``sudo -n tee`` to write ``3`` to ``/proc/sys/vm/drop_caches``.
+    Failures are non-fatal — a warning is logged with a hint about
+    ``sparkrun setup clear-cache --save-sudo``.
+    """
+    from sparkrun.hosts import is_local_host
+    from sparkrun.scripts import read_script
+
+    script = read_script("clear_cache.sh")
+
+    kw = ssh_kwargs or {}
+    local_hosts = [h for h in hosts if is_local_host(h)]
+    remote_hosts = [h for h in hosts if not is_local_host(h)]
+
+    if local_hosts:
+        result = run_local_script(script, dry_run=dry_run)
+        if not result.success and not dry_run:
+            logger.warning(
+                "Could not clear page cache locally — run "
+                "'sparkrun setup clear-cache --save-sudo' to enable "
+                "passwordless cache clearing for future runs."
+            )
+
+    if remote_hosts:
+        results = run_remote_scripts_parallel(
+            remote_hosts, script, timeout=30, dry_run=dry_run, **kw,
+        )
+        failed = [r.host for r in results if not r.success]
+        if failed:
+            logger.warning(
+                "Could not clear page cache on %d host(s) — run "
+                "'sparkrun setup clear-cache --save-sudo' to enable "
+                "passwordless cache clearing for future runs.",
+                len(failed),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -318,19 +471,6 @@ def wait_for_port(
         time.sleep(retry_interval)
 
     return False
-
-
-# ---------------------------------------------------------------------------
-# IP validation
-# ---------------------------------------------------------------------------
-
-def is_valid_ip(ip: str) -> bool:
-    """Basic check if a string looks like an IPv4 address."""
-    # TODO: either do regex or use ipaddress module
-    parts = ip.strip().split(".")
-    if len(parts) != 4:
-        return False
-    return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
 
 # ---------------------------------------------------------------------------

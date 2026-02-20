@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 
 from sparkrun.scripts import read_script
+from sparkrun.utils import parse_kv_output  # noqa: F401 — re-exported for callers
 
 logger = logging.getLogger(__name__)
 
@@ -71,13 +72,7 @@ def parse_ib_detect_output(output: str) -> dict[str, str]:
     Returns:
         Dictionary of detected key=value pairs.
     """
-    result: dict[str, str] = {}
-    for line in output.strip().splitlines():
-        line = line.strip()
-        if "=" in line and not line.startswith("#"):
-            key, _, value = line.partition("=")
-            result[key.strip()] = value.strip()
-    return result
+    return parse_kv_output(output)
 
 
 def generate_nccl_env(ib_info: dict[str, str]) -> dict[str, str]:
