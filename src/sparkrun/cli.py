@@ -587,6 +587,11 @@ def run(
         click.echo(f"  {line}")
     click.echo()
 
+    # Best-effort page cache clear before container launch
+    if not runtime.is_delegating_runtime():
+        from sparkrun.orchestration.primitives import try_clear_page_cache, build_ssh_kwargs
+        try_clear_page_cache(host_list, ssh_kwargs=build_ssh_kwargs(config), dry_run=dry_run)
+
     # Launch — the runtime controls solo vs cluster orchestration.
     # If distribution pre-detected IB, pass nccl_env through to avoid
     # redundant detection inside the runtime.
@@ -1525,6 +1530,191 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
         parts.append("%d fixed" % ok_count)
     if skip_count:
         parts.append("%d skipped (no cache)" % skip_count)
+    if fail_count:
+        parts.append("%d failed" % fail_count)
+    click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
+
+    if fail_count:
+        sys.exit(1)
+
+
+@setup.command("clear-cache")
+@host_options
+@click.option("--user", "-u", default=None, help="Target user for sudoers entry (default: SSH user)")
+@click.option("--save-sudo", is_flag=True, default=False,
+              help="Install sudoers entry for passwordless cache clearing (requires sudo once)")
+@dry_run_option
+@click.pass_context
+def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry_run):
+    """Drop the Linux page cache on cluster hosts.
+
+    Runs 'sync' followed by writing 3 to /proc/sys/vm/drop_caches on
+    each target host.  This frees cached file data so inference
+    containers have maximum available memory on DGX Spark's unified
+    CPU/GPU memory.
+
+    Tries non-interactive sudo first on all hosts in parallel, then
+    falls back to password-based sudo for any that fail.
+
+    Use --save-sudo to install a scoped sudoers entry so future runs
+    never need a password. The entry only permits writing to
+    /proc/sys/vm/drop_caches — no broader privileges are granted.
+
+    Examples:
+
+      sparkrun setup clear-cache --hosts 10.24.11.13,10.24.11.14
+
+      sparkrun setup clear-cache --cluster mylab
+
+      sparkrun setup clear-cache --cluster mylab --save-sudo
+
+      sparkrun setup clear-cache --cluster mylab --dry-run
+    """
+    import os
+
+    from sparkrun.config import SparkrunConfig
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+    from sparkrun.orchestration.ssh import (
+        run_remote_scripts_parallel,
+        run_remote_sudo_script,
+    )
+
+    config = SparkrunConfig()
+
+    # Resolve hosts
+    cluster_mgr = _get_cluster_manager()
+    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+
+    # Resolve SSH user
+    cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
+    if user is None:
+        user = cluster_user or config.ssh_user or os.environ.get("USER", "root")
+
+    # Build SSH kwargs
+    ssh_kwargs = build_ssh_kwargs(config)
+    if user:
+        ssh_kwargs["ssh_user"] = user
+
+    click.echo("Clearing page cache on %d host(s)..." % len(host_list))
+    click.echo()
+
+    sudo_password = None
+
+    # --save-sudo: install scoped sudoers entry on each host
+    if save_sudo:
+        click.echo("Installing sudoers entry for passwordless cache clearing...")
+        sudoers_script = (
+            'set -euo pipefail\n'
+            'SUDOERS_FILE="/etc/sudoers.d/sparkrun-dropcaches-{user}"\n'
+            '\n'
+            'cat > "$SUDOERS_FILE" << SUDOERS_EOF\n'
+            '# Installed by: sparkrun setup clear-cache --save-sudo\n'
+            '{user} ALL=(root) NOPASSWD: /usr/bin/tee /proc/sys/vm/drop_caches\n'
+            'SUDOERS_EOF\n'
+            '\n'
+            'if visudo -cf "$SUDOERS_FILE" >/dev/null 2>&1; then\n'
+            '    chmod 0440 "$SUDOERS_FILE"\n'
+            '    echo "OK: installed sudoers entry in $SUDOERS_FILE"\n'
+            'else\n'
+            '    rm -f "$SUDOERS_FILE"\n'
+            '    echo "ERROR: sudoers validation failed"\n'
+            '    exit 1\n'
+            'fi\n'
+        ).format(user=user)
+
+        if dry_run:
+            click.echo("  [dry-run] Would install sudoers entry on %d host(s):" % len(host_list))
+            for h in host_list:
+                click.echo("    %s: /etc/sudoers.d/sparkrun-dropcaches-%s" % (h, user))
+            click.echo()
+        else:
+            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+            sudoers_ok = 0
+            sudoers_fail = 0
+            for h in host_list:
+                r = run_remote_sudo_script(
+                    h, sudoers_script, sudo_password, timeout=300, dry_run=False, **ssh_kwargs,
+                )
+                if r.success:
+                    sudoers_ok += 1
+                    click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
+                else:
+                    sudoers_fail += 1
+                    click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+            click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
+            click.echo()
+
+    # Generate the drop_caches script with sudo -n (non-interactive).
+    drop_script = (
+        'set -euo pipefail\n'
+        'sync\n'
+        'echo 3 | sudo -n /usr/bin/tee /proc/sys/vm/drop_caches > /dev/null 2>&1\n'
+        'echo "OK: page cache cleared"\n'
+    )
+
+    # Password-based fallback script (no sudo — run_remote_sudo_script runs as root)
+    fallback_script = (
+        'set -euo pipefail\n'
+        'sync\n'
+        'echo 3 > /proc/sys/vm/drop_caches\n'
+        'echo "OK: page cache cleared"\n'
+    )
+
+    # Step 1: Try non-interactive sudo on all hosts in parallel
+    parallel_results = run_remote_scripts_parallel(
+        host_list, drop_script, timeout=300, dry_run=dry_run, **ssh_kwargs,
+    )
+
+    # Partition results: successes vs failures needing password
+    result_map: dict[str, object] = {}
+    failed_hosts = []
+    for r in parallel_results:
+        if r.success:
+            result_map[r.host] = r
+        else:
+            failed_hosts.append(r.host)
+
+    # Step 2: For failed hosts, fall back to password-based sudo
+    if failed_hosts and not dry_run:
+        if sudo_password is None:
+            click.echo("Sudo password required for %d host(s)." % len(failed_hosts))
+            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+        for h in failed_hosts:
+            r = run_remote_sudo_script(
+                h, fallback_script, sudo_password, timeout=300, dry_run=dry_run, **ssh_kwargs,
+            )
+            result_map[h] = r
+
+        # Retry individually on per-host sudo failures
+        still_failed = [h for h in failed_hosts if not result_map[h].success]
+        if still_failed and sudo_password:
+            click.echo()
+            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
+            for fhost in still_failed:
+                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
+                retry_result = run_remote_sudo_script(
+                    fhost, fallback_script, per_host_pw, timeout=300, dry_run=dry_run, **ssh_kwargs,
+                )
+                result_map[fhost] = retry_result
+
+    # Report results
+    ok_count = 0
+    fail_count = 0
+    for h in host_list:
+        r = result_map.get(h)
+        if r is None:
+            continue
+        if r.success:
+            ok_count += 1
+            click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
+        else:
+            fail_count += 1
+            click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+
+    click.echo()
+    parts = []
+    if ok_count:
+        parts.append("%d cleared" % ok_count)
     if fail_count:
         parts.append("%d failed" % fail_count)
     click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")

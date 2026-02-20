@@ -253,6 +253,58 @@ def resolve_nccl_env(
 
 
 # ---------------------------------------------------------------------------
+# Host preparation (pre-launch)
+# ---------------------------------------------------------------------------
+
+def try_clear_page_cache(
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+) -> None:
+    """Best-effort drop of the Linux page cache on hosts before container launch.
+
+    Frees cached file data so GPU-intensive inference containers have
+    maximum available memory on DGX Spark's unified CPU/GPU memory.
+    Uses ``sudo -n tee`` to write ``3`` to ``/proc/sys/vm/drop_caches``.
+    Failures are non-fatal — a warning is logged with a hint about
+    ``sparkrun setup clear-cache --save-sudo``.
+    """
+    from sparkrun.hosts import is_local_host
+
+    script = (
+        'set -euo pipefail\n'
+        'sync\n'
+        'echo 3 | sudo -n /usr/bin/tee /proc/sys/vm/drop_caches > /dev/null 2>&1\n'
+    )
+
+    kw = ssh_kwargs or {}
+    local_hosts = [h for h in hosts if is_local_host(h)]
+    remote_hosts = [h for h in hosts if not is_local_host(h)]
+
+    if local_hosts:
+        result = run_local_script(script, dry_run=dry_run)
+        if not result.success and not dry_run:
+            logger.warning(
+                "Could not clear page cache locally — run "
+                "'sparkrun setup clear-cache --save-sudo' to enable "
+                "passwordless cache clearing for future runs."
+            )
+
+    if remote_hosts:
+        results = run_remote_scripts_parallel(
+            remote_hosts, script, timeout=30, dry_run=dry_run, **kw,
+        )
+        failed = [r.host for r in results if not r.success]
+        if failed:
+            logger.warning(
+                "Could not clear page cache on %d host(s) — run "
+                "'sparkrun setup clear-cache --save-sudo' to enable "
+                "passwordless cache clearing for future runs.",
+                len(failed),
+            )
+
+
+# ---------------------------------------------------------------------------
 # Container cleanup
 # ---------------------------------------------------------------------------
 
