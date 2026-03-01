@@ -202,9 +202,12 @@ class EugrVllmRayRuntime(VllmRayRuntime):
                 ssh_kwargs=ssh_kwargs, timeout=30,
             )
             # rsync mod contents to remote
+            kw = ssh_kwargs or {}
             run_rsync_parallel(
-                [host], str(mod_path) + "/", remote_tmp + "/",
-                ssh_kwargs=ssh_kwargs,
+                str(mod_path) + "/", [host], remote_tmp + "/",
+                ssh_user=kw.get("ssh_user"),
+                ssh_key=kw.get("ssh_key"),
+                ssh_options=kw.get("ssh_options"),
             )
             # docker cp into container and run
             script = (
