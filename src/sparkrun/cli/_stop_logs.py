@@ -105,12 +105,13 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
         run_remote_command(host, cmds, timeout=30, dry_run=dry_run, **ssh_kwargs)
         stopped_count += len(names)
 
-    # Clean up job metadata for discovered clusters
-    for cid in result.groups:
-        remove_job_metadata(cid, cache_dir=str(config.cache_dir))
-    for _host, name, _status, _image in result.solo_entries:
-        solo_cid = name.removesuffix("_solo") if name.endswith("_solo") else name
-        remove_job_metadata(solo_cid, cache_dir=str(config.cache_dir))
+    # Clean up job metadata for discovered clusters (skip in dry-run mode)
+    if not dry_run:
+        for cid in result.groups:
+            remove_job_metadata(cid, cache_dir=str(config.cache_dir))
+        for _host, name, _status, _image in result.solo_entries:
+            solo_cid = name.removesuffix("_solo") if name.endswith("_solo") else name
+            remove_job_metadata(solo_cid, cache_dir=str(config.cache_dir))
 
     hosts_touched = len(host_containers)
     click.echo("Stopped %d jobs(s) across %d host(s)." % (stopped_count, hosts_touched))
