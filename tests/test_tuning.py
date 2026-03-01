@@ -330,7 +330,7 @@ class TestSglangTunerDryRun:
 class TestSglangRuntimeAutoMount:
     def test_get_extra_volumes_empty_when_no_configs(self, v, monkeypatch):
         """SglangRuntime.get_extra_volumes returns {} when no tuning configs."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_volumes",
             lambda: None,
@@ -340,7 +340,7 @@ class TestSglangRuntimeAutoMount:
 
     def test_get_extra_env_empty_when_no_configs(self, v, monkeypatch):
         """SglangRuntime.get_extra_env returns {} when no tuning configs."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_env",
             lambda: None,
@@ -350,7 +350,7 @@ class TestSglangRuntimeAutoMount:
 
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """SglangRuntime.get_extra_volumes returns mapping when configs exist."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         expected = {"/cache/tuning/sglang": TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_volumes",
@@ -361,7 +361,7 @@ class TestSglangRuntimeAutoMount:
 
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """SglangRuntime.get_extra_env returns env when configs exist."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         expected = {"SGLANG_MOE_CONFIG_DIR": TUNING_ENV_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_env",
@@ -378,14 +378,14 @@ class TestSglangRuntimeAutoMount:
 class TestBaseRuntimeHooks:
     def test_default_get_extra_volumes(self, v):
         """Base RuntimePlugin.get_extra_volumes returns empty dict."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         # llama-cpp doesn't override get_extra_volumes
         runtime = get_runtime("llama-cpp", v)
         assert runtime.get_extra_volumes() == {}
 
     def test_default_get_extra_env(self, v):
         """Base RuntimePlugin.get_extra_env returns empty dict."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         runtime = get_runtime("llama-cpp", v)
         assert runtime.get_extra_env() == {}
 
@@ -657,7 +657,7 @@ class TestVllmTunerDryRun:
 class TestVllmRayRuntimeAutoMount:
     def test_get_extra_volumes_empty_when_no_configs(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_volumes returns {} when no tuning configs."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: None,
@@ -667,7 +667,7 @@ class TestVllmRayRuntimeAutoMount:
 
     def test_get_extra_env_empty_when_no_configs(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_env returns {} when no tuning configs."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: None,
@@ -677,7 +677,7 @@ class TestVllmRayRuntimeAutoMount:
 
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_volumes returns mapping when configs exist."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
@@ -688,7 +688,7 @@ class TestVllmRayRuntimeAutoMount:
 
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_env returns env when configs exist."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
@@ -701,7 +701,7 @@ class TestVllmRayRuntimeAutoMount:
 class TestVllmDistributedAutoMount:
     def test_get_extra_volumes_empty_when_no_configs(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_volumes returns {} when no configs."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: None,
@@ -711,7 +711,7 @@ class TestVllmDistributedAutoMount:
 
     def test_get_extra_env_empty_when_no_configs(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_env returns {} when no configs."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: None,
@@ -721,7 +721,7 @@ class TestVllmDistributedAutoMount:
 
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_volumes returns mapping when configs exist."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
@@ -732,7 +732,7 @@ class TestVllmDistributedAutoMount:
 
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_env returns env when configs exist."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
@@ -745,7 +745,7 @@ class TestVllmDistributedAutoMount:
 class TestEugrVllmAutoMount:
     def test_inherits_vllm_ray_auto_mount(self, v, monkeypatch):
         """EugrVllmRayRuntime inherits get_extra_volumes from VllmRayRuntime."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
@@ -756,7 +756,7 @@ class TestEugrVllmAutoMount:
 
     def test_inherits_vllm_ray_auto_env(self, v, monkeypatch):
         """EugrVllmRayRuntime inherits get_extra_env from VllmRayRuntime."""
-        from sparkrun.bootstrap import get_runtime
+        from sparkrun.core.bootstrap import get_runtime
         expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",

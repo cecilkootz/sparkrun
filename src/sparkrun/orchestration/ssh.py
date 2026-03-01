@@ -243,7 +243,7 @@ def stream_remote_logs(
         dry_run: If True, print the command that would run and return.
     """
     from sparkrun.orchestration.docker import docker_logs_cmd
-    from sparkrun.core_models.hosts import is_local_host
+    from sparkrun.core.hosts import is_local_host
 
     logs_cmd = docker_logs_cmd(container_name, follow=True, tail=tail)
 
@@ -296,7 +296,7 @@ def stream_container_file_logs(
         "tail", "-f", "--lines", str(tail), log_file,
     ]
 
-    from sparkrun.core_models.hosts import is_local_host
+    from sparkrun.core.hosts import is_local_host
 
     if is_local := is_local_host(host):
         cmd = tail_cmd
@@ -337,7 +337,7 @@ def start_log_capture(
         A :class:`subprocess.Popen` handle, or ``None`` on failure.
     """
     from sparkrun.orchestration.docker import docker_logs_cmd
-    from sparkrun.core_models.hosts import is_local_host
+    from sparkrun.core.hosts import is_local_host
 
     logs_cmd = docker_logs_cmd(container_name, follow=True, tail=tail)
 

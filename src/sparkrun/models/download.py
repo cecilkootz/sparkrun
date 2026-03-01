@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from sparkrun.core_models.config import resolve_cache_dir
+from sparkrun.core.config import resolve_cache_dir
 
 logger = logging.getLogger(__name__)
 

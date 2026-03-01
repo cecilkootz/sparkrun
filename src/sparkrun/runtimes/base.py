@@ -10,8 +10,8 @@ from typing import Any, TYPE_CHECKING
 from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.config import SparkrunConfig
-    from sparkrun.core_models.recipe import Recipe
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
@@ -605,7 +605,7 @@ class RuntimePlugin(Plugin):
             generate_container_launch_script,
             generate_exec_serve_script,
         )
-        from sparkrun.core_models.hosts import is_local_host
+        from sparkrun.core.hosts import is_local_host
 
         is_local = is_local_host(host)
         container_name = generate_container_name(cluster_id, "solo")
@@ -685,7 +685,7 @@ class RuntimePlugin(Plugin):
             cleanup_containers_local,
         )
         from sparkrun.orchestration.docker import generate_container_name
-        from sparkrun.core_models.hosts import is_local_host
+        from sparkrun.core.hosts import is_local_host
 
         container_name = generate_container_name(cluster_id, "solo")
         is_local = is_local_host(host)

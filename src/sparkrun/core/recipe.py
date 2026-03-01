@@ -6,14 +6,16 @@ import logging
 import re
 from os import path as osp
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Optional
+
+import yaml
 
 from vpd.next.util import read_yaml
 from vpd.legacy.yaml_dict import vpd_chain, VirtualPathDictChain
 from vpd.legacy.arguments import arg_substitute
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.registry import RegistryManager
+    from sparkrun.core.registry import RegistryManager
     from sparkrun.models.vram import VRAMEstimate
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,34 @@ _KNOWN_KEYS = {
     "cluster_only", "solo_only",
     "metadata",
 }
+
+
+def _sort_dict_by_patterns(data: dict[str, Any], patterns: list[str]) -> dict[str, Any]:
+    """Return a new dict with keys ordered according to *patterns*.
+
+    Each entry in *patterns* is either an exact key name or an
+    ``fnmatch``-style glob (e.g. ``"model*"``).  Keys are emitted in
+    the order of the first pattern they match; keys that match no
+    pattern are appended alphabetically at the end.
+    """
+    from fnmatch import fnmatch
+
+    ordered: dict[str, Any] = {}
+    remaining = set(data.keys())
+
+    for pattern in patterns:
+        # Collect matching keys in their original insertion order
+        matched = [k for k in data if k in remaining and fnmatch(k, pattern)]
+        matched.sort()
+        for k in matched:
+            ordered[k] = data[k]
+            remaining.discard(k)
+
+    # Append unmatched keys alphabetically
+    for k in sorted(remaining):
+        ordered[k] = data[k]
+
+    return ordered
 
 
 def _resolve_runtime_from_command_hint(recipe: Recipe) -> None:
@@ -492,6 +522,93 @@ class Recipe:
     def __repr__(self) -> str:
         return "Recipe(name=%r, runtime=%r, model=%r)" % (self.name, self.runtime, self.model)
 
+    # Preferred key ordering for export.  Entries are either exact key names
+    # or fnmatch-style patterns (e.g. "model*" matches "model", "model_revision").
+    # Keys not listed here are appended alphabetically after the last group.
+    EXPORT_KEY_ORDER: list[str] = [
+        "model*",
+        "runtime*",
+        "min_nodes", "max_nodes",
+        "container",
+        "solo_only", "cluster_only",
+        "metadata",
+        "defaults",
+        "env",
+        "command",
+    ]
+
+    # Top-level keys that are folded into metadata on export.
+    _METADATA_PROMOTED_KEYS = {"description", "maintainer"}
+
+    def _build_export_dict(self) -> dict[str, Any]:
+        """Build a canonical recipe dict from resolved instance attributes.
+
+        Applies normalizations performed by the constructor and resolvers:
+        - Uses resolved ``runtime`` (e.g. ``"vllm-distributed"`` not ``"vllm"``).
+        - Folds top-level ``description`` into ``metadata.description``.
+        - Omits empty/default-valued fields to keep output minimal.
+        - Drops v1-only and internal keys (``recipe_version``, ``sparkrun_version``,
+          ``name``, ``mode``, ``runtime_config``, unknown sweep keys).
+        """
+        d: dict[str, Any] = {}
+
+        # -- Core fields (always present) --
+        d["model"] = self.model
+        if self.model_revision:
+            d["model_revision"] = self.model_revision
+        d["runtime"] = self._raw.get('runtime', self.runtime)  # use bare original if given
+        if self.runtime_version:
+            d["runtime_version"] = self.runtime_version
+
+        # -- Topology --
+        if self.min_nodes != 1:
+            d["min_nodes"] = self.min_nodes
+        if self.max_nodes is not None:
+            d["max_nodes"] = self.max_nodes
+
+        # -- Container --
+        if self.container:
+            d["container"] = self.container
+
+        # -- Preserve Raw Topology flags --
+        if self._raw.get("solo_only"):
+            d["solo_only"] = True
+        if self._raw.get("cluster_only"):
+            d["cluster_only"] = True
+
+        # -- Metadata (absorb promoted keys) --
+        meta = dict(self.metadata)
+        if self.description:
+            meta["description"] = self.description
+        if self.maintainer:
+            meta["maintainer"] = self.maintainer
+        if meta:
+            d["metadata"] = meta  # TODO: should we limit model params that were auto-added?
+
+        # -- Configuration --
+        if self.defaults:
+            d["defaults"] = dict(self.defaults)
+        if self.env:
+            d["env"] = dict(self.env)
+        if self.command:
+            d["command"] = self.command
+
+        return d
+
+    def export(self, path: Optional[str | Path]) -> Optional[str]:
+        """Export the recipe as canonical YAML.
+
+        Builds a clean dict from resolved attributes (not raw input),
+        applies preferred key ordering, and writes YAML.
+        """
+        export_dict = self._build_export_dict()
+        ordered = _sort_dict_by_patterns(export_dict, self.EXPORT_KEY_ORDER)
+        recipe_text = yaml.safe_dump(ordered, indent=2, sort_keys=False)
+        if path is None:
+            return recipe_text
+        Path(path).write_text(recipe_text, encoding="utf-8")
+        return None
+
 
 def find_recipe(name: str, search_paths: list[Path] | None = None,
                 registry_manager: RegistryManager | None = None,
@@ -512,11 +629,8 @@ def find_recipe(name: str, search_paths: list[Path] | None = None,
         RecipeError: If recipe not found.
     """
     # Parse @registry/name prefix
-    scoped_registry = None
-    lookup_name = name
-    if name.startswith("@") and "/" in name:
-        prefix, lookup_name = name.split("/", 1)
-        scoped_registry = prefix[1:]  # strip leading @
+    from sparkrun.utils import parse_scoped_name
+    scoped_registry, lookup_name = parse_scoped_name(name)
 
     # Scoped lookup: search only the specified registry
     if scoped_registry and registry_manager:

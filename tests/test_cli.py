@@ -15,7 +15,6 @@ from click.testing import CliRunner
 from sparkrun.cli import main
 from sparkrun.runtimes.sglang import SglangRuntime
 
-
 # Name for the test recipe used by CLI integration tests.
 # The original bundled recipe (_TEST_RECIPE_NAME) was removed
 # from the repo (commit 34ece47), so we create a synthetic test recipe.
@@ -79,15 +78,15 @@ def _cli_test_recipes(tmp_path_factory, monkeypatch):
     recipe_file.write_text(yaml.safe_dump(_TEST_RECIPE_DATA))
 
     # Patch discover_cwd_recipes to return our test recipe
-    import sparkrun.core_models.recipe
-    original_discover = sparkrun.core_models.recipe.discover_cwd_recipes
+    import sparkrun.core.recipe
+    original_discover = sparkrun.core.recipe.discover_cwd_recipes
 
     def _patched_discover(directory=None):
         # Return our test recipes plus any originals
         originals = original_discover(directory)
         return [recipe_file] + originals
 
-    monkeypatch.setattr(sparkrun.core_models.recipe, "discover_cwd_recipes", _patched_discover)
+    monkeypatch.setattr(sparkrun.core.recipe, "discover_cwd_recipes", _patched_discover)
 
 
 class TestVersionAndHelp:
@@ -321,8 +320,8 @@ class TestStopCommand:
         """Test that sparkrun stop with no hosts specified exits with error."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
             "stop",
@@ -342,9 +341,9 @@ class TestClusterCommands:
         """Set up a config root with a test cluster for CLI tests."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.core.cluster_manager import ClusterManager
         mgr = ClusterManager(config_root)
         mgr.create("test-cluster", ["10.0.0.1", "10.0.0.2"])
         return config_root
@@ -367,8 +366,8 @@ class TestClusterCommands:
         """Test creating a cluster."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
             "cluster",
@@ -398,8 +397,8 @@ class TestClusterCommands:
         """Test that cluster list with no clusters shows appropriate message."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, ["cluster", "list"])
 
@@ -480,8 +479,8 @@ class TestClusterCommands:
         """Test creating a cluster with --user."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
             "cluster", "create", "my-cluster",
@@ -499,8 +498,8 @@ class TestClusterCommands:
         """Test that cluster created without --user does not show User field."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         runner.invoke(main, [
             "cluster", "create", "no-user-cluster",
@@ -532,9 +531,9 @@ class TestRunWithCluster:
         """Set up a config root with a test cluster for CLI tests."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.core.cluster_manager import ClusterManager
         mgr = ClusterManager(config_root)
         mgr.create("test-cluster", ["10.0.0.1", "10.0.0.2"])
         return config_root
@@ -775,8 +774,8 @@ class TestFollowLogs:
     def test_follow_logs_called_after_successful_run(self, runner, reset_bootstrap):
         """follow_logs is called after a successful detached run."""
         with mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})), \
-             mock.patch.object(SglangRuntime, "run", return_value=0), \
-             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+                mock.patch.object(SglangRuntime, "run", return_value=0), \
+                mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
                 "run",
                 _TEST_RECIPE_NAME,
@@ -793,8 +792,8 @@ class TestFollowLogs:
     def test_no_follow_flag_skips_follow_logs(self, runner, reset_bootstrap):
         """--no-follow prevents follow_logs from being called."""
         with mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})), \
-             mock.patch.object(SglangRuntime, "run", return_value=0), \
-             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+                mock.patch.object(SglangRuntime, "run", return_value=0), \
+                mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
                 "run",
                 _TEST_RECIPE_NAME,
@@ -809,7 +808,7 @@ class TestFollowLogs:
     def test_dry_run_skips_follow_logs(self, runner, reset_bootstrap):
         """--dry-run prevents follow_logs from being called."""
         with mock.patch.object(SglangRuntime, "run", return_value=0), \
-             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+                mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
                 "run",
                 _TEST_RECIPE_NAME,
@@ -824,8 +823,8 @@ class TestFollowLogs:
     def test_foreground_skips_follow_logs(self, runner, reset_bootstrap):
         """--foreground prevents follow_logs from being called."""
         with mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})), \
-             mock.patch.object(SglangRuntime, "run", return_value=0), \
-             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+                mock.patch.object(SglangRuntime, "run", return_value=0), \
+                mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
                 "run",
                 _TEST_RECIPE_NAME,
@@ -840,8 +839,8 @@ class TestFollowLogs:
     def test_nonzero_exit_skips_follow_logs(self, runner, reset_bootstrap):
         """Non-zero exit code from runtime.run() prevents follow_logs."""
         with mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})), \
-             mock.patch.object(SglangRuntime, "run", return_value=1), \
-             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+                mock.patch.object(SglangRuntime, "run", return_value=1), \
+                mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
             result = runner.invoke(main, [
                 "run",
                 _TEST_RECIPE_NAME,
@@ -861,9 +860,9 @@ class TestSetupSshCommand:
         """Set up a config root with a test cluster for SSH tests."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.core.cluster_manager import ClusterManager
         mgr = ClusterManager(config_root)
         mgr.create("ssh-cluster", ["10.0.0.1", "10.0.0.2", "10.0.0.3"])
         return config_root
@@ -882,8 +881,8 @@ class TestSetupSshCommand:
         """Test that setup ssh with no hosts exits with error."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, ["setup", "ssh", "--no-include-self"])
         assert result.exit_code != 0
@@ -893,8 +892,8 @@ class TestSetupSshCommand:
         """Test that setup ssh with a single host exits with error."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
             "setup", "ssh", "--hosts", "10.0.0.1", "--no-include-self",
@@ -906,8 +905,8 @@ class TestSetupSshCommand:
         """Test that --dry-run shows the command without executing."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
             "setup", "ssh",
@@ -927,8 +926,8 @@ class TestSetupSshCommand:
         """Test that --dry-run uses OS user when --user is not specified."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
         monkeypatch.setenv("USER", "myosuser")
 
         result = runner.invoke(main, [
@@ -960,8 +959,8 @@ class TestSetupSshCommand:
         """Test that setup ssh invokes subprocess.run with correct args."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)) as mock_run:
             result = runner.invoke(main, [
@@ -983,10 +982,10 @@ class TestSetupSshCommand:
         """Test that setup ssh picks up the cluster's configured user."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
         mgr = ClusterManager(config_root)
         mgr.create("usercluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
 
@@ -1003,10 +1002,10 @@ class TestSetupSshCommand:
         """Test that --user flag overrides the cluster's configured user."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
         mgr = ClusterManager(config_root)
         mgr.create("usercluster2", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
 
@@ -1026,8 +1025,8 @@ class TestSetupSshCommand:
         """Test that --include-self adds the local IP to the mesh."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         from sparkrun.orchestration.primitives import local_ip_for
         local_ip = local_ip_for("10.0.0.1")
@@ -1048,8 +1047,8 @@ class TestSetupSshCommand:
         """Test that --include-self doesn't duplicate if local IP already in hosts."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         from sparkrun.orchestration.primitives import local_ip_for
         local_ip = local_ip_for("10.0.0.1")
@@ -1070,8 +1069,8 @@ class TestSetupSshCommand:
         """Test that --extra-hosts adds additional hosts to the mesh."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
             "setup", "ssh",
@@ -1089,8 +1088,8 @@ class TestSetupSshCommand:
         """Test that --extra-hosts deduplicates against --hosts."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
             "setup", "ssh",
@@ -1115,9 +1114,9 @@ class TestSetupFixPermissions:
         """Set up a config root with a test cluster."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.core.cluster_manager import ClusterManager
         mgr = ClusterManager(config_root)
         mgr.create("fix-cluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
         return config_root
@@ -1138,8 +1137,8 @@ class TestSetupFixPermissions:
         """Test that fix-permissions with no hosts exits with error."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, ["setup", "fix-permissions"])
         assert result.exit_code != 0
@@ -1154,7 +1153,7 @@ class TestSetupFixPermissions:
             success=True, stdout="[dry-run]", stderr="", host="10.0.0.2",
         )
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_result_1, mock_result_2]):
+                        return_value=[mock_result_1, mock_result_2]):
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1175,8 +1174,8 @@ class TestSetupFixPermissions:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_result_1, mock_result_2]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
+                        return_value=[mock_result_1, mock_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1203,9 +1202,9 @@ class TestSetupFixPermissions:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_ok_result, mock_fail_result]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
-                         return_value=mock_password_result):
+                        return_value=[mock_ok_result, mock_fail_result]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
+                           return_value=mock_password_result):
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1225,7 +1224,7 @@ class TestSetupFixPermissions:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_result_1, mock_result_2]) as mock_parallel:
+                        return_value=[mock_result_1, mock_result_2]) as mock_parallel:
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1248,7 +1247,7 @@ class TestSetupFixPermissions:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_result_1, mock_result_2]):
+                        return_value=[mock_result_1, mock_result_2]):
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1266,8 +1265,8 @@ class TestSetupFixPermissions:
             success=True, stdout="[dry-run]", stderr="", host="10.0.0.2",
         )
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_result_1, mock_result_2]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
+                        return_value=[mock_result_1, mock_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1296,9 +1295,9 @@ class TestSetupFixPermissions:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_chown_result_1, mock_chown_result_2]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
-                         return_value=mock_sudoers_result) as mock_sudo:
+                        return_value=[mock_chown_result_1, mock_chown_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
+                           return_value=mock_sudoers_result) as mock_sudo:
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1330,9 +1329,9 @@ class TestSetupFixPermissions:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_chown_result_1, mock_chown_result_2]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
-                         return_value=mock_sudoers_result) as mock_sudo:
+                        return_value=[mock_chown_result_1, mock_chown_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
+                           return_value=mock_sudoers_result) as mock_sudo:
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1380,9 +1379,9 @@ class TestSetupFixPermissions:
             return mock_chown_password_ok
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_chown_result_1, mock_chown_fail]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
-                         side_effect=sudo_dispatch):
+                        return_value=[mock_chown_result_1, mock_chown_fail]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
+                           side_effect=sudo_dispatch):
             result = runner.invoke(main, [
                 "setup", "fix-permissions",
                 "--cluster", "fix-cluster",
@@ -1401,9 +1400,9 @@ class TestSetupClearCache:
         """Set up a config root with a test cluster."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        from sparkrun.core.cluster_manager import ClusterManager
         mgr = ClusterManager(config_root)
         mgr.create("cache-cluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
         return config_root
@@ -1423,8 +1422,8 @@ class TestSetupClearCache:
         """Test that clear-cache with no hosts exits with error."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, ["setup", "clear-cache"])
         assert result.exit_code != 0
@@ -1439,7 +1438,7 @@ class TestSetupClearCache:
             success=True, stdout="[dry-run]", stderr="", host="10.0.0.2",
         )
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_result_1, mock_result_2]):
+                        return_value=[mock_result_1, mock_result_2]):
             result = runner.invoke(main, [
                 "setup", "clear-cache",
                 "--cluster", "cache-cluster",
@@ -1460,8 +1459,8 @@ class TestSetupClearCache:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_result_1, mock_result_2]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
+                        return_value=[mock_result_1, mock_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
             result = runner.invoke(main, [
                 "setup", "clear-cache",
                 "--cluster", "cache-cluster",
@@ -1487,9 +1486,9 @@ class TestSetupClearCache:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_ok_result, mock_fail_result]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
-                         return_value=mock_password_result):
+                        return_value=[mock_ok_result, mock_fail_result]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
+                           return_value=mock_password_result):
             result = runner.invoke(main, [
                 "setup", "clear-cache",
                 "--cluster", "cache-cluster",
@@ -1506,8 +1505,8 @@ class TestSetupClearCache:
             success=True, stdout="[dry-run]", stderr="", host="10.0.0.2",
         )
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_result_1, mock_result_2]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
+                        return_value=[mock_result_1, mock_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script") as mock_sudo:
             result = runner.invoke(main, [
                 "setup", "clear-cache",
                 "--cluster", "cache-cluster",
@@ -1535,9 +1534,9 @@ class TestSetupClearCache:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_drop_result_1, mock_drop_result_2]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
-                         return_value=mock_sudoers_result) as mock_sudo:
+                        return_value=[mock_drop_result_1, mock_drop_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
+                           return_value=mock_sudoers_result) as mock_sudo:
             result = runner.invoke(main, [
                 "setup", "clear-cache",
                 "--cluster", "cache-cluster",
@@ -1568,9 +1567,9 @@ class TestSetupClearCache:
         )
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-                         return_value=[mock_drop_result_1, mock_drop_result_2]), \
-             mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
-                         return_value=mock_sudoers_result) as mock_sudo:
+                        return_value=[mock_drop_result_1, mock_drop_result_2]), \
+                mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script",
+                           return_value=mock_sudoers_result) as mock_sudo:
             result = runner.invoke(main, [
                 "setup", "clear-cache",
                 "--cluster", "cache-cluster",
@@ -1676,8 +1675,8 @@ class TestLogCommand:
         """sparkrun logs with no hosts exits with error."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
         result = runner.invoke(main, [
             "logs",
@@ -1736,8 +1735,8 @@ class TestUrlRecipe:
         assert _expand_recipe_shortcut("qwen3-1.7b-vllm") == "qwen3-1.7b-vllm"
         assert _expand_recipe_shortcut("@other-registry/foo") == "@other-registry/foo"
         assert (
-            _expand_recipe_shortcut("https://example.com/r.yaml")
-            == "https://example.com/r.yaml"
+                _expand_recipe_shortcut("https://example.com/r.yaml")
+                == "https://example.com/r.yaml"
         )
 
     def test_simplify_spark_arena_url(self):
@@ -1807,9 +1806,9 @@ class TestUrlRecipe:
         """Successful fetch writes cache file."""
         from sparkrun.cli._common import _fetch_and_cache_recipe
 
-        import sparkrun.core_models.config
+        import sparkrun.core.config
 
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path)
 
         recipe_yaml = b"model: test-model\nruntime: sglang\ncontainer: test:latest\n"
         from unittest.mock import MagicMock, patch
@@ -1826,14 +1825,14 @@ class TestUrlRecipe:
         assert path.read_bytes() == recipe_yaml
 
     def test_fetch_and_cache_recipe_network_error_with_cache(
-        self, tmp_path, monkeypatch
+            self, tmp_path, monkeypatch
     ):
         """Network failure with existing cache returns cached copy."""
         from sparkrun.cli._common import _fetch_and_cache_recipe, _url_cache_path
 
-        import sparkrun.core_models.config
+        import sparkrun.core.config
 
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path)
 
         url = "https://example.com/recipe"
         cache_path = _url_cache_path(url)
@@ -1845,20 +1844,20 @@ class TestUrlRecipe:
         from urllib.error import URLError
 
         with patch(
-            "urllib.request.urlopen", side_effect=URLError("offline")
+                "urllib.request.urlopen", side_effect=URLError("offline")
         ):
             path = _fetch_and_cache_recipe(url)
         assert path == cache_path
 
     def test_fetch_and_cache_recipe_network_error_no_cache(
-        self, tmp_path, monkeypatch
+            self, tmp_path, monkeypatch
     ):
         """Network failure with no cache raises ClickException."""
         from sparkrun.cli._common import _fetch_and_cache_recipe
 
-        import sparkrun.core_models.config
+        import sparkrun.core.config
 
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path)
 
         from unittest.mock import patch
 
@@ -1867,7 +1866,7 @@ class TestUrlRecipe:
         import click
 
         with patch(
-            "urllib.request.urlopen", side_effect=URLError("offline")
+                "urllib.request.urlopen", side_effect=URLError("offline")
         ):
             with pytest.raises(click.ClickException, match="Failed to fetch"):
                 _fetch_and_cache_recipe("https://example.com/recipe")
@@ -1884,10 +1883,10 @@ class TestResolveClusterUser:
     def test_returns_user_from_named_cluster(self, tmp_path, monkeypatch):
         """Named cluster with a user returns that user."""
         from sparkrun.cli._common import _resolve_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
 
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", tmp_path)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
 
         mgr = ClusterManager(tmp_path)
         mgr.create("mylab", ["10.0.0.1", "10.0.0.2"], user="labuser")
@@ -1898,10 +1897,10 @@ class TestResolveClusterUser:
     def test_returns_none_for_cluster_without_user(self, tmp_path, monkeypatch):
         """Named cluster without a user returns None."""
         from sparkrun.cli._common import _resolve_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
 
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", tmp_path)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
 
         mgr = ClusterManager(tmp_path)
         mgr.create("nouser", ["10.0.0.1"])
@@ -1912,10 +1911,10 @@ class TestResolveClusterUser:
     def test_returns_none_when_hosts_flag_given(self, tmp_path, monkeypatch):
         """When --hosts is provided, cluster user is not resolved."""
         from sparkrun.cli._common import _resolve_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
 
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", tmp_path)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
 
         mgr = ClusterManager(tmp_path)
         mgr.create("mylab", ["10.0.0.1"], user="labuser")
@@ -1927,10 +1926,10 @@ class TestResolveClusterUser:
     def test_returns_none_when_hosts_file_given(self, tmp_path, monkeypatch):
         """When --hosts-file is provided, cluster user is not resolved."""
         from sparkrun.cli._common import _resolve_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
 
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", tmp_path)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
 
         mgr = ClusterManager(tmp_path)
         mgr.create("mylab", ["10.0.0.1"], user="labuser")
@@ -1941,10 +1940,10 @@ class TestResolveClusterUser:
     def test_falls_back_to_default_cluster(self, tmp_path, monkeypatch):
         """When no explicit cluster/hosts, uses default cluster's user."""
         from sparkrun.cli._common import _resolve_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
 
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", tmp_path)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
 
         mgr = ClusterManager(tmp_path)
         mgr.create("default-lab", ["10.0.0.1"], user="defaultuser")
@@ -1963,26 +1962,26 @@ class TestResolveClusterUser:
     def test_returns_none_for_nonexistent_cluster(self, tmp_path, monkeypatch):
         """Nonexistent cluster name returns None (no crash)."""
         from sparkrun.cli._common import _resolve_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
 
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", tmp_path)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
 
         mgr = ClusterManager(tmp_path)
         result = _resolve_cluster_user("doesnotexist", None, None, mgr)
         assert result is None
 
 
-class TestApplyClusterUser:
-    """Tests for _apply_cluster_user helper."""
+class TestResolveHostsAppliesClusterUser:
+    """Tests that _resolve_hosts_or_exit applies cluster SSH user to config."""
 
     def test_sets_user_on_config(self, tmp_path, monkeypatch):
-        """_apply_cluster_user sets the cluster user on config."""
-        from sparkrun.cli._common import _apply_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
-        from sparkrun.core_models.config import SparkrunConfig
+        """_resolve_hosts_or_exit sets the cluster user on config."""
+        from sparkrun.cli._common import _resolve_hosts_or_exit
+        from sparkrun.core.cluster_manager import ClusterManager
+        from sparkrun.core.config import SparkrunConfig
 
-        import sparkrun.core_models.config as config_mod
+        import sparkrun.core.config as config_mod
         monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
 
         config_file = tmp_path / "nonexistent.yaml"
@@ -1992,16 +1991,23 @@ class TestApplyClusterUser:
         mgr = ClusterManager(tmp_path)
         mgr.create("mylab", ["10.0.0.1"], user="labuser")
 
-        _apply_cluster_user(config, "mylab", None, None, mgr)
+        monkeypatch.setattr(
+            "sparkrun.cli._common._get_cluster_manager", lambda v=None: mgr)
+        monkeypatch.setattr(
+            "sparkrun.core.hosts.resolve_hosts",
+            lambda **kw: ["10.0.0.1"],
+        )
+
+        _resolve_hosts_or_exit(None, None, "mylab", config)
         assert config.ssh_user == "labuser"
 
     def test_no_op_when_no_cluster_user(self, tmp_path, monkeypatch):
-        """_apply_cluster_user leaves config unchanged when cluster has no user."""
-        from sparkrun.cli._common import _apply_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
-        from sparkrun.core_models.config import SparkrunConfig
+        """_resolve_hosts_or_exit leaves config unchanged when cluster has no user."""
+        from sparkrun.cli._common import _resolve_hosts_or_exit
+        from sparkrun.core.cluster_manager import ClusterManager
+        from sparkrun.core.config import SparkrunConfig
 
-        import sparkrun.core_models.config as config_mod
+        import sparkrun.core.config as config_mod
         monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
 
         config_file = tmp_path / "config.yaml"
@@ -2012,18 +2018,25 @@ class TestApplyClusterUser:
         mgr = ClusterManager(tmp_path)
         mgr.create("nouser-cluster", ["10.0.0.1"])
 
-        _apply_cluster_user(config, "nouser-cluster", None, None, mgr)
+        monkeypatch.setattr(
+            "sparkrun.cli._common._get_cluster_manager", lambda v=None: mgr)
+        monkeypatch.setattr(
+            "sparkrun.core.hosts.resolve_hosts",
+            lambda **kw: ["10.0.0.1"],
+        )
+
+        _resolve_hosts_or_exit(None, None, "nouser-cluster", config)
         # global user should remain since cluster has no user
         assert config.ssh_user == "global_user"
 
     def test_cluster_user_overrides_global_config(self, tmp_path, monkeypatch):
         """Cluster user takes precedence over global ssh.user in config."""
-        from sparkrun.cli._common import _apply_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
-        from sparkrun.core_models.config import SparkrunConfig
+        from sparkrun.cli._common import _resolve_hosts_or_exit
+        from sparkrun.core.cluster_manager import ClusterManager
+        from sparkrun.core.config import SparkrunConfig
         from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-        import sparkrun.core_models.config as config_mod
+        import sparkrun.core.config as config_mod
         monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
 
         config_file = tmp_path / "config.yaml"
@@ -2033,7 +2046,14 @@ class TestApplyClusterUser:
         mgr = ClusterManager(tmp_path)
         mgr.create("mylab", ["10.0.0.1"], user="cluster_user")
 
-        _apply_cluster_user(config, "mylab", None, None, mgr)
+        monkeypatch.setattr(
+            "sparkrun.cli._common._get_cluster_manager", lambda v=None: mgr)
+        monkeypatch.setattr(
+            "sparkrun.core.hosts.resolve_hosts",
+            lambda **kw: ["10.0.0.1"],
+        )
+
+        _resolve_hosts_or_exit(None, None, "mylab", config)
 
         # The override should flow through to build_ssh_kwargs
         kwargs = build_ssh_kwargs(config)
@@ -2041,11 +2061,11 @@ class TestApplyClusterUser:
 
     def test_no_op_when_hosts_flag_given(self, tmp_path, monkeypatch):
         """When --hosts is provided, cluster user is not applied."""
-        from sparkrun.cli._common import _apply_cluster_user
-        from sparkrun.core_models.cluster_manager import ClusterManager
-        from sparkrun.core_models.config import SparkrunConfig
+        from sparkrun.cli._common import _resolve_hosts_or_exit
+        from sparkrun.core.cluster_manager import ClusterManager
+        from sparkrun.core.config import SparkrunConfig
 
-        import sparkrun.core_models.config as config_mod
+        import sparkrun.core.config as config_mod
         monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
 
         config_file = tmp_path / "nonexistent.yaml"
@@ -2054,17 +2074,24 @@ class TestApplyClusterUser:
         mgr = ClusterManager(tmp_path)
         mgr.create("mylab", ["10.0.0.1"], user="labuser")
 
+        monkeypatch.setattr(
+            "sparkrun.cli._common._get_cluster_manager", lambda v=None: mgr)
+        monkeypatch.setattr(
+            "sparkrun.core.hosts.resolve_hosts",
+            lambda **kw: ["10.0.0.1"],
+        )
+
         # hosts is non-None, so cluster user should not be resolved
-        _apply_cluster_user(config, None, "10.0.0.1", None, mgr)
+        _resolve_hosts_or_exit("10.0.0.1", None, None, config)
         assert config.ssh_user is None
 
 
 class TestClusterUserInCLICommands:
     """Integration tests verifying cluster SSH user propagation through CLI commands.
 
-    These tests verify that commands which call _resolve_hosts_or_exit also
-    call _apply_cluster_user, so the cluster's SSH user flows through to
-    build_ssh_kwargs and all downstream SSH operations.
+    These tests verify that _resolve_hosts_or_exit applies the cluster's
+    SSH user to config, so it flows through to build_ssh_kwargs and all
+    downstream SSH operations.
     """
 
     @pytest.fixture
@@ -2072,10 +2099,10 @@ class TestClusterUserInCLICommands:
         """Set up a cluster with a custom SSH user."""
         config_root = tmp_path / "config"
         config_root.mkdir()
-        import sparkrun.core_models.config
-        monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
-        from sparkrun.core_models.cluster_manager import ClusterManager
+        from sparkrun.core.cluster_manager import ClusterManager
         mgr = ClusterManager(config_root)
         mgr.create("userlab", ["10.0.0.1", "10.0.0.2"], user="labadmin")
         return config_root
@@ -2095,7 +2122,7 @@ class TestClusterUserInCLICommands:
             )
 
         monkeypatch.setattr(
-            "sparkrun.cluster_manager.query_cluster_status",
+            "sparkrun.core.cluster_manager.query_cluster_status",
             mock_query_status,
         )
 
@@ -2120,7 +2147,7 @@ class TestClusterUserInCLICommands:
             )
 
         monkeypatch.setattr(
-            "sparkrun.cluster_manager.query_cluster_status",
+            "sparkrun.core.cluster_manager.query_cluster_status",
             mock_query_status,
         )
 

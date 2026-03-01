@@ -387,22 +387,31 @@ class RegistryManager:
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:12]
         return self.cache_root / ("_url_%s" % url_hash)
 
+    @staticmethod
+    def _build_sparse_paths(entry: RegistryEntry) -> list[str]:
+        """Build the sparse-checkout path list for a single registry entry.
+
+        Always includes the recipe subpath and ``.sparkrun`` (for manifests).
+        Tuning and benchmark subpaths are added when configured.
+        """
+        paths = [entry.subpath]
+        if entry.tuning_subpath:
+            paths.append(entry.tuning_subpath)
+        if entry.benchmark_subpath:
+            paths.append(entry.benchmark_subpath)
+        paths.append(".sparkrun")
+        return paths
+
     def _sparse_checkout_paths_for_url(self, url: str) -> list[str]:
         """Collect all subpaths that need to be checked out for a given URL.
 
         Returns the union of subpath, tuning_subpath, and benchmark_subpath
         for all enabled registries pointing to the given URL.
         """
-        paths = set()
+        paths: set[str] = set()
         for entry in self._load_registries():
             if entry.url == url and entry.enabled:
-                paths.add(entry.subpath)
-                if entry.tuning_subpath:
-                    paths.add(entry.tuning_subpath)
-                if entry.benchmark_subpath:
-                    paths.add(entry.benchmark_subpath)
-                # Always include .sparkrun for manifest
-                paths.add(".sparkrun")
+                paths.update(self._build_sparse_paths(entry))
         return sorted(paths)
 
     def _sync_url(self, url: str, progress: Callable[[str, bool], None] | None = None) -> bool:
@@ -516,12 +525,7 @@ class RegistryManager:
                 # Ensure sparse checkout covers all configured subpaths
                 # (picks up tuning_subpath / benchmark_subpath added after
                 # the initial clone)
-                sparse_paths = [entry.subpath]
-                if entry.tuning_subpath:
-                    sparse_paths.append(entry.tuning_subpath)
-                if entry.benchmark_subpath:
-                    sparse_paths.append(entry.benchmark_subpath)
-                sparse_paths.append(".sparkrun")
+                sparse_paths = self._build_sparse_paths(entry)
                 subprocess.run(
                     ["git", "-C", str(cache_dir), "sparse-checkout", "set"] + sparse_paths,
                     capture_output=True, text=True, timeout=30,
@@ -589,12 +593,7 @@ class RegistryManager:
                     return False
 
                 # Configure sparse checkout for all subpaths
-                sparse_paths = [entry.subpath]
-                if entry.tuning_subpath:
-                    sparse_paths.append(entry.tuning_subpath)
-                if entry.benchmark_subpath:
-                    sparse_paths.append(entry.benchmark_subpath)
-                sparse_paths.append(".sparkrun")
+                sparse_paths = self._build_sparse_paths(entry)
                 result = subprocess.run(
                     [
                         "git",
@@ -880,41 +879,40 @@ class RegistryManager:
         logger.info("Reset registries to defaults (%d entries)", len(entries))
         return entries
 
-    def enable_registry(self, name: str) -> None:
-        """Enable a registry by name.
+    def _set_registry_enabled(self, name: str, enabled: bool) -> None:
+        """Set the enabled state of a registry by name.
 
         Args:
-            name: Registry name to enable
+            name: Registry name to modify.
+            enabled: Target enabled state.
 
         Raises:
-            RegistryError: If the registry is not found
+            RegistryError: If the registry is not found.
         """
         entries = self._load_registries()
         for e in entries:
             if e.name == name:
-                e.enabled = True
+                e.enabled = enabled
                 self._save_registries(entries)
-                logger.info("Enabled registry %s", name)
+                logger.info("%s registry %s", "Enabled" if enabled else "Disabled", name)
                 return
         raise RegistryError("Registry %r not found" % name)
+
+    def enable_registry(self, name: str) -> None:
+        """Enable a registry by name.
+
+        Raises:
+            RegistryError: If the registry is not found
+        """
+        self._set_registry_enabled(name, True)
 
     def disable_registry(self, name: str) -> None:
         """Disable a registry by name.
 
-        Args:
-            name: Registry name to disable
-
         Raises:
             RegistryError: If the registry is not found
         """
-        entries = self._load_registries()
-        for e in entries:
-            if e.name == name:
-                e.enabled = False
-                self._save_registries(entries)
-                logger.info("Disabled registry %s", name)
-                return
-        raise RegistryError("Registry %r not found" % name)
+        self._set_registry_enabled(name, False)
 
     def list_registries(self) -> list[RegistryEntry]:
         """List all configured registries.
@@ -1048,7 +1046,7 @@ class RegistryManager:
         if not recipe_dir.is_dir():
             return []
 
-        from sparkrun.core_models.recipe import recipe_summary
+        from sparkrun.core.recipe import recipe_summary
 
         recipes = []
         for f in sorted(recipe_dir.rglob("*.yaml")):

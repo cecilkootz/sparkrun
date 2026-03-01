@@ -243,8 +243,8 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     import os
     import subprocess
 
-    from sparkrun.core_models.hosts import resolve_hosts
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.hosts import resolve_hosts
+    from sparkrun.core.config import SparkrunConfig
 
     config = SparkrunConfig()
 
@@ -351,7 +351,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
       sparkrun setup cx7 --cluster mylab --force
     """
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.networking import (
         CX7HostDetection,
         configure_cx7_host,
@@ -561,7 +561,7 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
 
       sparkrun setup fix-permissions --cluster mylab --dry-run
     """
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.sudo import run_with_sudo_fallback
     from sparkrun.orchestration.ssh import run_remote_sudo_script
 
@@ -718,7 +718,7 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
 
       sparkrun setup clear-cache --cluster mylab --dry-run
     """
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.sudo import run_with_sudo_fallback
     from sparkrun.orchestration.ssh import run_remote_sudo_script
 

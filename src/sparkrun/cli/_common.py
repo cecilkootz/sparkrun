@@ -55,7 +55,7 @@ def _url_cache_path(url: str) -> Path:
     """Return the local cache path for a remote recipe URL."""
     import hashlib
 
-    from sparkrun.core_models.config import DEFAULT_CACHE_DIR
+    from sparkrun.core.config import DEFAULT_CACHE_DIR
 
     url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
     return DEFAULT_CACHE_DIR / "remote-recipes" / ("%s.yaml" % url_hash)
@@ -155,7 +155,7 @@ def _parse_options(options: tuple[str, ...]) -> dict:
 
 def _get_config_and_registry(config_path=None):
     """Create SparkrunConfig and RegistryManager."""
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.config import SparkrunConfig
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
     registry_mgr = config.get_registry_manager()
     return config, registry_mgr
@@ -227,21 +227,10 @@ def _resolve_cluster_user(
     return None
 
 
-def _apply_cluster_user(config, cluster_name, hosts, hosts_file, cluster_mgr):
-    """Set the cluster's SSH user on config so all downstream SSH calls use it.
-
-    The cluster user takes precedence over the global config ``ssh.user``.
-    If no cluster user is defined, config is left unchanged.
-    """
-    cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
-    if cluster_user:
-        config.ssh_user = cluster_user
-
-
 def _get_cluster_manager(v=None):
     """Create a ClusterManager using the SAF config root."""
-    from sparkrun.core_models.cluster_manager import ClusterManager
-    from sparkrun.core_models.config import get_config_root
+    from sparkrun.core.cluster_manager import ClusterManager
+    from sparkrun.core.config import get_config_root
     # TODO: switch to leveraging scitrera-app-framework plugin for ClusterManager singleton?
     return ClusterManager(get_config_root(v))
 
@@ -256,7 +245,7 @@ def _load_recipe(config, recipe_name):
     Returns:
         Tuple of (recipe, recipe_path, registry_mgr).
     """
-    from sparkrun.core_models.recipe import Recipe, find_recipe, discover_cwd_recipes, RecipeError, RecipeAmbiguousError
+    from sparkrun.core.recipe import Recipe, find_recipe, discover_cwd_recipes, RecipeError, RecipeAmbiguousError
 
     # Expand shortcuts (e.g. @spark-arena/UUID -> full URL)
     recipe_name = _expand_recipe_shortcut(recipe_name)
@@ -317,10 +306,14 @@ def _load_recipe(config, recipe_name):
 def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None):
     """Resolve hosts from CLI args; exit if none are found.
 
+    Also applies the cluster's SSH user to *config* when a cluster is
+    resolved and has a user configured.  This replaces the previous
+    separate ``_apply_cluster_user()`` call.
+
     Returns:
         Tuple of (host_list, cluster_mgr).
     """
-    from sparkrun.core_models.hosts import resolve_hosts
+    from sparkrun.core.hosts import resolve_hosts
     cluster_mgr = _get_cluster_manager(v)
     host_list = resolve_hosts(
         hosts=hosts,
@@ -332,6 +325,11 @@ def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None):
     if not host_list:
         click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
         sys.exit(1)
+    # Apply cluster-level SSH user (if defined) so downstream SSH calls
+    # automatically use it.
+    cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
+    if cluster_user:
+        config.ssh_user = cluster_user
     return host_list, cluster_mgr
 
 
@@ -340,10 +338,10 @@ def _resolve_setup_context(hosts, hosts_file, cluster_name, config, user=None):
     import os
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
+    # _resolve_hosts_or_exit now applies cluster user to config automatically
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
-    cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
     if user is None:
-        user = cluster_user or config.ssh_user or os.environ.get("USER", "root")
+        user = config.ssh_user or os.environ.get("USER", "root")
     ssh_kwargs = build_ssh_kwargs(config)
     if user:
         ssh_kwargs["ssh_user"] = user
@@ -467,7 +465,7 @@ class RecipeNameType(click.ParamType):
             # since @registry/name contains '/' but is not a filesystem path)
             if incomplete.startswith("@"):
                 config, registry_mgr = _get_config_and_registry()
-                from sparkrun.core_models.recipe import list_recipes
+                from sparkrun.core.recipe import list_recipes
 
                 if "/" not in incomplete:
                     # No slash yet — try to expand directly to @registry/recipe
@@ -501,8 +499,8 @@ class RecipeNameType(click.ParamType):
                     return items
                 else:
                     # Completing recipe after @registry/
-                    prefix, recipe_prefix = incomplete.split("/", 1)
-                    registry_name = prefix[1:]  # strip @
+                    from sparkrun.utils import parse_scoped_name
+                    registry_name, recipe_prefix = parse_scoped_name(incomplete)
                     # Only load recipes from the target registry
                     try:
                         entry = registry_mgr.get_registry(registry_name)
@@ -521,7 +519,7 @@ class RecipeNameType(click.ParamType):
                 return _complete_yaml_files(incomplete)
 
             # Default: list recipe names from visible registries only
-            from sparkrun.core_models.recipe import list_recipes, discover_cwd_recipes
+            from sparkrun.core.recipe import list_recipes, discover_cwd_recipes
             config, registry_mgr = _get_config_and_registry()
             recipes = list_recipes(registry_manager=registry_mgr,
                                    include_hidden=False,
@@ -576,8 +574,8 @@ class ProfileNameType(click.ParamType):
                     return items
                 else:
                     # Completing profile name after @registry/
-                    prefix, profile_prefix = incomplete.split("/", 1)
-                    registry_name = prefix[1:]  # strip @
+                    from sparkrun.utils import parse_scoped_name
+                    registry_name, profile_prefix = parse_scoped_name(incomplete)
                     profiles = registry_mgr.list_benchmark_profiles(
                         registry_name=registry_name, include_hidden=True)
                     return [
@@ -656,7 +654,7 @@ class RuntimeNameType(click.ParamType):
     def shell_complete(self, ctx, param, incomplete):
         """Return completion items for known runtimes."""
         try:
-            from sparkrun.core_models.recipe import list_recipes
+            from sparkrun.core.recipe import list_recipes
             _, registry_mgr = _get_config_and_registry()
             recipes = list_recipes(registry_manager=registry_mgr)
             runtimes = sorted({r.get("runtime", "") for r in recipes if r.get("runtime")})

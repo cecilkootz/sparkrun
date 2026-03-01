@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.recipe import Recipe
+    from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def save_job_metadata(
     *hash* is the 12-char hex portion of *cluster_id*.
     """
     if cache_dir is None:
-        from sparkrun.core_models.config import DEFAULT_CACHE_DIR
+        from sparkrun.core.config import DEFAULT_CACHE_DIR
         cache_dir = str(DEFAULT_CACHE_DIR)
 
     digest = cluster_id.removeprefix("sparkrun_")
@@ -92,7 +92,7 @@ def remove_job_metadata(cluster_id: str, cache_dir: str | None = None) -> None:
     No-op if the file does not exist.
     """
     if cache_dir is None:
-        from sparkrun.core_models.config import DEFAULT_CACHE_DIR
+        from sparkrun.core.config import DEFAULT_CACHE_DIR
         cache_dir = str(DEFAULT_CACHE_DIR)
 
     digest = cluster_id.removeprefix("sparkrun_")
@@ -104,7 +104,7 @@ def remove_job_metadata(cluster_id: str, cache_dir: str | None = None) -> None:
 def load_job_metadata(cluster_id: str, cache_dir: str | None = None) -> dict | None:
     """Load job metadata for a cluster_id.  Returns ``None`` if not found."""
     if cache_dir is None:
-        from sparkrun.core_models.config import DEFAULT_CACHE_DIR
+        from sparkrun.core.config import DEFAULT_CACHE_DIR
         cache_dir = str(DEFAULT_CACHE_DIR)
 
     digest = cluster_id.removeprefix("sparkrun_")

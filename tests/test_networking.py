@@ -431,7 +431,7 @@ class TestSetupCX7CLI:
         from sparkrun.cli import main
 
         # Mock resolve_hosts to return empty list (simulates no config/no args)
-        with mock.patch("sparkrun.hosts.resolve_hosts", return_value=[]):
+        with mock.patch("sparkrun.core.hosts.resolve_hosts", return_value=[]):
             result = runner.invoke(main, ["setup", "cx7"])
         assert result.exit_code != 0
         assert "No hosts" in result.output or "no hosts" in result.output.lower()

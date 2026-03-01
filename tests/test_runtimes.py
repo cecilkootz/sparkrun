@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 from sparkrun.orchestration.job_metadata import generate_cluster_id
-from sparkrun.core_models.recipe import Recipe
+from sparkrun.core.recipe import Recipe
 from sparkrun.runtimes.vllm_ray import VllmRayRuntime
 from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
 from sparkrun.runtimes.sglang import SglangRuntime
@@ -751,7 +751,7 @@ class TestEugrPreServe:
     def test_pre_serve_with_mods_local(self, eugr_runtime_with_mods):
         """_pre_serve() applies mods to local containers via docker cp/exec."""
         runtime = eugr_runtime_with_mods
-        with mock.patch("sparkrun.hosts.is_local_host", return_value=True):
+        with mock.patch("sparkrun.core.hosts.is_local_host", return_value=True):
             with mock.patch("subprocess.run") as mock_run:
                 mock_run.return_value = mock.Mock(returncode=0)
                 runtime._pre_serve(

@@ -81,3 +81,40 @@ def load_yaml(path) -> dict:
     with _Path(path).open() as f:
         data = yaml.safe_load(f)
     return data if isinstance(data, dict) else {}
+
+
+def parse_scoped_name(name: str) -> tuple[str | None, str]:
+    """Parse ``@registry/lookup_name`` into ``(registry, lookup_name)``.
+
+    Returns ``(None, name)`` when the input has no ``@`` prefix or
+    no ``/`` separator.
+    """
+    if name.startswith("@") and "/" in name:
+        prefix, lookup_name = name.split("/", 1)
+        return prefix[1:], lookup_name  # strip leading @
+    return None, name
+
+
+def merge_env(*env_dicts: dict[str, str] | None) -> dict[str, str]:
+    """Merge multiple environment dicts (later values win)."""
+    merged: dict[str, str] = {}
+    for d in env_dicts:
+        if d:
+            merged.update(d)
+    return merged
+
+
+def format_duration(seconds: float) -> str:
+    """Format a duration in seconds to a human-readable string.
+
+    Returns ``"Xs"`` for durations under 60s, ``"Xm Ys"`` for durations
+    under an hour, and ``"Xh Ym Zs"`` for longer durations.
+    """
+    s = int(seconds)
+    if s < 60:
+        return "%.1fs" % seconds
+    m, s = divmod(s, 60)
+    if m < 60:
+        return "%dm %ds" % (m, s)
+    h, m = divmod(m, 60)
+    return "%dh %dm %ds" % (h, m, s)

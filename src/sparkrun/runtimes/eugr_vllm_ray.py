@@ -13,8 +13,8 @@ from scitrera_app_framework import Variables, get_working_path
 from sparkrun.runtimes.vllm_ray import VllmRayRuntime
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.config import SparkrunConfig
-    from sparkrun.core_models.recipe import Recipe
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         mod_basename = Path(mod_name).name
         container_dest = "/workspace/mods/%s" % mod_basename
 
-        from sparkrun.core_models.hosts import is_local_host
+        from sparkrun.core.hosts import is_local_host
 
         if is_local_host(host):
             # Local: docker cp directly

@@ -8,7 +8,6 @@ import click
 
 from ._common import (
     RECIPE_NAME,
-    _apply_cluster_user,
     _apply_tp_trimming,
     _load_recipe,
     _resolve_hosts_or_exit,
@@ -52,7 +51,7 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, stop_all, tp_overrid
         click.echo("Error: Must specify RECIPE_NAME or --all.", err=True)
         sys.exit(1)
 
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.config import SparkrunConfig
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     if stop_all:
@@ -63,14 +62,13 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, stop_all, tp_overrid
 
 def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
     """Discover and stop all sparkrun containers on the target hosts."""
-    from sparkrun.core_models.cluster_manager import query_cluster_status
+    from sparkrun.core.cluster_manager import query_cluster_status
     from sparkrun.orchestration.docker import docker_stop_cmd
     from sparkrun.orchestration.job_metadata import remove_job_metadata
     from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.ssh import run_remote_command
 
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
-    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
 
     ssh_kwargs = build_ssh_kwargs(config)
 
@@ -123,7 +121,6 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
-    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
 
     # Apply TP-based host trimming to match what 'run' used for cluster_id
     host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
@@ -137,7 +134,7 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
 
     container_names = enumerate_cluster_containers(cluster_id, len(host_list))
 
-    from sparkrun.core_models.hosts import is_local_host
+    from sparkrun.core.hosts import is_local_host
     is_local = len(host_list) == 1 and is_local_host(host_list[0])
     if is_local:
         cleanup_containers_local(container_names, dry_run=dry_run)
@@ -166,8 +163,8 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
 
       sparkrun logs glm-4.7-flash-awq --cluster mylab --tail 200
     """
-    from sparkrun.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.job_metadata import generate_cluster_id
 
     v = init_sparkrun()
@@ -179,7 +176,6 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
 
     # Resolve hosts
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
-    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
 
     # Apply TP-based host trimming to match what 'run' used for cluster_id
     host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)

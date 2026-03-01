@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from sparkrun.core_models.config import resolve_cache_dir
+from sparkrun.core.config import resolve_cache_dir
 from sparkrun.models.download import download_model, model_cache_path
 from sparkrun.orchestration.primitives import map_transfer_failures
 from sparkrun.orchestration.ssh import (
@@ -20,15 +20,6 @@ from sparkrun.orchestration.ssh import (
 from sparkrun.scripts import read_script
 
 logger = logging.getLogger(__name__)
-
-
-def _model_cache_path(model_id: str, cache_dir: str) -> str:
-    """Compute the HF cache path for a model.
-
-    Thin wrapper around :func:`sparkrun.models.download.model_cache_path`
-    kept for backward compatibility.
-    """
-    return model_cache_path(model_id, cache_dir)
 
 
 def _try_fix_remote_permissions(
@@ -136,7 +127,7 @@ def distribute_model_from_local(
     )
 
     # Step 3: rsync model cache to all hosts in parallel
-    model_path = _model_cache_path(model_id, cache)
+    model_path = model_cache_path(model_id, cache)
     results = run_rsync_parallel(
         model_path, xfer, model_path,
         ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
@@ -214,7 +205,7 @@ def distribute_model_from_head(
 
     # Build distribute script (rsync from head to workers)
     targets = worker_transfer_hosts or hosts[1:]
-    model_path = _model_cache_path(model_id, cache)
+    model_path = model_cache_path(model_id, cache)
     ssh_opts = build_ssh_opts_string(
         ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
     )

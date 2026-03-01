@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import logging
 from abc import abstractmethod
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
@@ -13,143 +12,13 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 from scitrera_app_framework import Plugin, Variables
-from vpd.next.util import read_yaml
+
+from sparkrun.core.bootstrap import EXT_BENCHMARKING_FRAMEWORKS
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.recipe import Recipe
+    from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
-
-EXT_BENCHMARKING_FRAMEWORKS = "sparkrun.benchmarking"
-
-# Keys in the benchmark: block that are NOT framework args
-_KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata", "timeout"}
-
-
-class BenchmarkError(Exception):
-    """Raised when a benchmark spec is invalid or cannot be loaded."""
-
-
-@dataclass
-class BenchmarkSpec:
-    """Standalone benchmark YAML definition.
-
-    Supports two formats for the ``benchmark:`` block:
-
-    Nested (explicit args)::
-
-        benchmark:
-          framework: llama-benchy
-          args:
-            pp: [2048]
-            depth: [0]
-
-    Flat (unknown keys swept into args)::
-
-        benchmark:
-          framework: llama-benchy
-          pp: [2048]
-          depth: [0]
-    """
-
-    source_path: str
-    framework: str
-    args: dict[str, Any]
-    timeout: int | None = None
-
-    @classmethod
-    def load(cls, path: str | Path) -> BenchmarkSpec:
-        """Load and validate a benchmark YAML file.
-
-        Supports two formats:
-
-        1. Embedded in a recipe YAML (``benchmark:`` key wraps the block).
-        2. Standalone profile file (top-level keys *are* the benchmark config).
-        """
-        p = Path(path)
-        if not p.exists():
-            raise BenchmarkError("Benchmark file not found: %s" % p)
-
-        data = read_yaml(str(p))
-        if not isinstance(data, dict):
-            raise BenchmarkError("Benchmark file must contain a YAML mapping: %s" % p)
-
-        block = data.get("benchmark")
-        if not isinstance(block, dict):
-            # Standalone profile file: top-level keys *are* the benchmark block
-            if "framework" in data:
-                block = data
-            else:
-                raise BenchmarkError("Benchmark file missing required 'benchmark' mapping")
-
-        framework = block.get("framework")
-        if not framework or not isinstance(framework, str):
-            raise BenchmarkError("benchmark.framework is required and must be a string")
-
-        # Explicit args take priority; unknown keys are swept in as well
-        args = dict(block.get("args") or {})
-        for k, v in block.items():
-            if k not in _KNOWN_BENCHMARK_KEYS and k not in args:
-                args[k] = v
-
-        if not isinstance(args, dict):
-            raise BenchmarkError("benchmark.args must be a mapping")
-
-        timeout = block.get("timeout")
-        if timeout is not None:
-            timeout = int(timeout)
-
-        return cls(
-            source_path=str(p),
-            framework=framework,
-            args=args,
-            timeout=timeout,
-        )
-
-    @classmethod
-    def from_recipe(cls, recipe: Recipe) -> BenchmarkSpec | None:
-        """Extract benchmark config from a recipe's raw data.
-
-        Returns None if the recipe has no ``benchmark:`` block.
-        """
-        block = recipe._raw.get("benchmark")
-        if not isinstance(block, dict):
-            return None
-
-        framework = block.get("framework", "llama-benchy")
-
-        # Explicit args take priority; unknown keys swept in
-        args = dict(block.get("args") or {})
-        for k, v in block.items():
-            if k not in _KNOWN_BENCHMARK_KEYS and k not in args:
-                args[k] = v
-
-        timeout = block.get("timeout")
-        if timeout is not None:
-            timeout = int(timeout)
-
-        return cls(
-            source_path=recipe.source_path or "",
-            framework=str(framework),
-            args=args,
-            timeout=timeout,
-        )
-
-    def build_command(self, extra_args: dict[str, Any] | None = None) -> list[str]:
-        """Render a shell argv list for this benchmark spec.
-
-        Command shape: ``framework --kebab-case-key VALUE ...``
-
-        Booleans become bare flags; lists emit repeated flags.
-        """
-        merged_args = dict(self.args)
-        if extra_args:
-            merged_args.update(extra_args)
-
-        cmd: list[str] = [self.framework]
-        cmd.extend(render_args_as_flags(merged_args))
-
-        return cmd
 
 
 def render_args_as_flags(args: dict[str, Any]) -> list[str]:
@@ -296,7 +165,7 @@ def export_results(
     """
     output_path = Path(output_path)
     # noinspection PyProtectedMember
-    recipe_text = yaml.safe_dump(recipe._raw, indent=2, sort_keys=True)
+    recipe_text = recipe.export(path=None)
     recipe_hash = hashlib.sha256(recipe_text.encode("utf-8")).hexdigest()
 
     # Build model metadata from recipe metadata (includes auto-detected
@@ -346,7 +215,7 @@ def export_results(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, indent=2)
 
     logger.info("Results exported to %s", output_path)
     return output_path

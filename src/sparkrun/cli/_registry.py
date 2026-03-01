@@ -126,7 +126,7 @@ def registry_add_url(ctx, url, config_path=None):
 
       sparkrun registry add https://github.com/spark-arena/recipe-registry
     """
-    from sparkrun.core_models.registry import RegistryError
+    from sparkrun.core.registry import RegistryError
 
     config, registry_mgr = _get_config_and_registry(config_path)
 
@@ -150,7 +150,7 @@ def registry_add_url(ctx, url, config_path=None):
 @click.pass_context
 def registry_remove(ctx, name, config_path=None):
     """Remove a recipe registry."""
-    from sparkrun.core_models.registry import RegistryError
+    from sparkrun.core.registry import RegistryError
 
     config, registry_mgr = _get_config_and_registry(config_path)
 
@@ -167,7 +167,7 @@ def registry_remove(ctx, name, config_path=None):
 @click.pass_context
 def registry_enable(ctx, name, config_path=None):
     """Enable a disabled registry."""
-    from sparkrun.core_models.registry import RegistryError
+    from sparkrun.core.registry import RegistryError
 
     config, registry_mgr = _get_config_and_registry(config_path)
 
@@ -184,7 +184,7 @@ def registry_enable(ctx, name, config_path=None):
 @click.pass_context
 def registry_disable(ctx, name, config_path=None):
     """Disable a registry (recipes will not appear in searches)."""
-    from sparkrun.core_models.registry import RegistryError
+    from sparkrun.core.registry import RegistryError
 
     config, registry_mgr = _get_config_and_registry(config_path)
 
@@ -233,7 +233,7 @@ def registry_update(ctx, name, config_path=None):
 
     If NAME is given, update only that registry. Otherwise update all enabled registries.
     """
-    from sparkrun.core_models.registry import RegistryError
+    from sparkrun.core.registry import RegistryError
 
     config, registry_mgr = _get_config_and_registry(config_path)
 
@@ -293,7 +293,7 @@ def registry_update(ctx, name, config_path=None):
 @click.pass_context
 def list_benchmark_profiles(ctx, show_all, registry_name, config_path=None):
     """List available benchmark profiles across registries."""
-    from sparkrun.core_models.registry import RegistryError
+    from sparkrun.core.registry import RegistryError
 
     config, registry_mgr = _get_config_and_registry(config_path)
 
@@ -330,9 +330,9 @@ def list_benchmark_profiles(ctx, show_all, registry_name, config_path=None):
 @click.pass_context
 def show_benchmark_profile(ctx, profile_name, config_path=None):
     """Show detailed benchmark profile information."""
-    from ..core_models.benchmark_profiles import find_benchmark_profile
-    from ..core_models.benchmark_profiles import ProfileAmbiguousError
-    from ..core_models.benchmark_profiles import ProfileError
+    from ..core.benchmark_profiles import find_benchmark_profile
+    from ..core.benchmark_profiles import ProfileAmbiguousError
+    from ..core.benchmark_profiles import ProfileError
 
     config, registry_mgr = _get_config_and_registry(config_path)
 

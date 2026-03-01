@@ -27,9 +27,9 @@ def registry_setup(tmp_path: Path, monkeypatch):
     cache_root.mkdir(parents=True)
 
     # Point SparkrunConfig to our temp dirs
-    import sparkrun.core_models.config
-    monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CONFIG_DIR", config_root)
-    monkeypatch.setattr(sparkrun.core_models.config, "DEFAULT_CACHE_DIR", tmp_path / "cache")
+    import sparkrun.core.config
+    monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+    monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path / "cache")
 
     # Write registries.yaml
     registry_data = {

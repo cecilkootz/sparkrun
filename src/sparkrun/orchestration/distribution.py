@@ -6,10 +6,10 @@ import hashlib
 import logging
 from typing import TYPE_CHECKING
 
-from sparkrun.core_models.hosts import is_local_host
+from sparkrun.core.hosts import is_local_host
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.config import SparkrunConfig
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ def distribute_resources(
     from sparkrun.containers.registry import ensure_image
     from sparkrun.models.distribute import distribute_model_from_local
     from sparkrun.models.download import download_model
-    from sparkrun.core_models.pending_ops import pending_op
+    from sparkrun.core.pending_ops import pending_op
 
     # Common kwargs for pending-op lock files
     _pop_kw = dict(

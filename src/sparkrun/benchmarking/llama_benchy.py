@@ -130,8 +130,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:
         """Parse llama-benchy JSON output into structured results.
 
-        Reads from the ``--save-result`` file if available, otherwise
-        falls back to parsing stdout.
+        Reads from the ``--save-result`` file if available (expected to be available)
         """
         json_data: dict[str, Any] = {}
 
@@ -144,21 +143,18 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
             except (OSError, FileNotFoundError):
                 logger.debug("Could not read result file %s, falling back to stdout", result_file)
 
-        if json_text is None:
-            json_text = stdout
-
         # Parse JSON content
-        if json_text.strip():
+        if json_text is not None and json_text.strip():
             try:
                 json_data = json.loads(json_text)
             except (json.JSONDecodeError, ValueError):
                 logger.warning("Failed to parse JSON output from llama-benchy")
 
-        # Extract benchmark rows for summary display
-        rows = json_data.get("benchmarks", [])
+        # # Extract benchmark rows for summary display
+        # rows = json_data.get("benchmarks", [])
 
         return {
-            "rows": rows,
+            # "rows": rows,
             "json": json_data,
             "stdout": stdout,
         }

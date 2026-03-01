@@ -11,7 +11,7 @@ from vpd.next.util import read_yaml
 
 if TYPE_CHECKING:
     from scitrera_app_framework import Variables
-    from sparkrun.core_models.registry import RegistryManager
+    from sparkrun.core.registry import RegistryManager
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ class SparkrunConfig:
 
     def get_registry_manager(self) -> 'RegistryManager':
         """Create a RegistryManager using the config root and cache dir."""
-        from sparkrun.core_models.registry import RegistryManager
+        from sparkrun.core.registry import RegistryManager
         return RegistryManager(
             config_root=self.config_path.parent if self.config_path else DEFAULT_CONFIG_DIR,
             cache_root=self.cache_dir / "registries",

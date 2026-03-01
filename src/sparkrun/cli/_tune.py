@@ -9,7 +9,6 @@ import click
 
 from ._common import (
     RECIPE_NAME,
-    _apply_cluster_user,
     _load_recipe,
     _resolve_hosts_or_exit,
     _setup_logging,
@@ -60,8 +59,8 @@ def tune_sglang(
       sparkrun tune sglang qwen3.5-35b-bf16-sglang -H myhost --tp 1 --tp 2 --tp 4
       sparkrun tune sglang qwen3.5-35b-bf16-sglang -H myhost --parallel 2
     """
-    from sparkrun.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.tuning.sglang import SglangTuner, DEFAULT_TP_SIZES
 
     v = init_sparkrun()
@@ -84,7 +83,6 @@ def tune_sglang(
 
     # Resolve hosts — only use the first host
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
-    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
     target_host = host_list[0]
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
@@ -143,8 +141,8 @@ def tune_vllm(
       sparkrun tune vllm qwen3-moe-vllm -H myhost --tp 1 --tp 2 --tp 4
       sparkrun tune vllm qwen3-moe-vllm -H myhost --parallel 2
     """
-    from sparkrun.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.tuning.vllm import VllmTuner, DEFAULT_TP_SIZES
 
     v = init_sparkrun()
@@ -167,7 +165,6 @@ def tune_vllm(
 
     # Resolve hosts — only use the first host
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
-    _apply_cluster_user(config, cluster_name, hosts, hosts_file, _cluster_mgr)
     target_host = host_list[0]
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)

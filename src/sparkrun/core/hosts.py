@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from sparkrun.core_models.cluster_manager import ClusterError, ClusterManager
+from sparkrun.core.cluster_manager import ClusterError, ClusterManager
 
 logger = logging.getLogger(__name__)
 

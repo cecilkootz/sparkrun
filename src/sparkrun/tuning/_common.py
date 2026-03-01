@@ -10,35 +10,15 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sparkrun.core_models.config import DEFAULT_CACHE_DIR
+from sparkrun.core.config import DEFAULT_CACHE_DIR
+from sparkrun.utils import format_duration as _format_duration  # noqa: F401 — re-exported for local callers
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.config import SparkrunConfig
+    from sparkrun.core.config import SparkrunConfig
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TP_SIZES = (1, 2, 4, 8)
-
-
-# ---------------------------------------------------------------------------
-# Shared utilities
-# ---------------------------------------------------------------------------
-
-
-def _format_duration(seconds: float) -> str:
-    """Format a duration in seconds to a human-readable string.
-
-    Returns ``"Xs"`` for durations under 60s, ``"Xm Ys"`` for durations
-    under an hour, and ``"Xh Ym Zs"`` for longer durations.
-    """
-    s = int(seconds)
-    if s < 60:
-        return "%.1fs" % seconds
-    m, s = divmod(s, 60)
-    if m < 60:
-        return "%dm %ds" % (m, s)
-    h, m = divmod(m, 60)
-    return "%dh %dm %ds" % (h, m, s)
 
 
 # ---------------------------------------------------------------------------

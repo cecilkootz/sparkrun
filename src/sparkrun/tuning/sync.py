@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.registry import RegistryManager
+    from sparkrun.core.registry import RegistryManager
 
 logger = logging.getLogger(__name__)
 

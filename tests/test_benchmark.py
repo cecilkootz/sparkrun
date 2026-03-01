@@ -10,13 +10,12 @@ import pytest
 import yaml
 
 from sparkrun.benchmarking.base import (
-    BenchmarkSpec,
-    BenchmarkError,
     render_args_as_flags,
     export_results,
 )
+from sparkrun.core.benchmark_profiles import BenchmarkError, BenchmarkSpec
 from sparkrun.benchmarking.llama_benchy import LlamaBenchyFramework
-from sparkrun.core_models.recipe import Recipe
+from sparkrun.core.recipe import Recipe
 from sparkrun.runtimes.base import RuntimePlugin
 from sparkrun.runtimes.vllm_ray import VllmRayRuntime
 from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
@@ -391,37 +390,39 @@ def test_llama_benchy_interpret_arg_scalar():
     assert result == 8
 
 
-def test_llama_benchy_parse_results_json():
-    """Test JSON text parsed into structured results."""
+def test_llama_benchy_parse_results_json(tmp_path):
+    """Test JSON file parsed into structured results."""
     fw = LlamaBenchyFramework()
     import json
-    json_text = json.dumps({
+    json_data = {
         "version": "0.1.0",
         "model": "org/model",
         "benchmarks": [
             {"concurrency": 1, "context_size": 2048, "pp_throughput": {"mean": 100.0}},
             {"concurrency": 1, "context_size": 4096, "pp_throughput": {"mean": 200.0}},
         ],
-    })
+    }
+    result_file = tmp_path / "results.json"
+    result_file.write_text(json.dumps(json_data))
 
-    results = fw.parse_results(json_text, "", result_file=None)
+    results = fw.parse_results("", "", result_file=str(result_file))
 
-    assert "rows" in results
-    assert len(results["rows"]) == 2
-    assert results["rows"][0]["concurrency"] == 1
-    assert results["rows"][0]["context_size"] == 2048
-    assert results["rows"][1]["context_size"] == 4096
     assert "json" in results
     assert results["json"]["model"] == "org/model"
+    assert len(results["json"]["benchmarks"]) == 2
+    assert results["json"]["benchmarks"][0]["concurrency"] == 1
+    assert results["json"]["benchmarks"][0]["context_size"] == 2048
+    assert results["json"]["benchmarks"][1]["context_size"] == 4096
+    assert "stdout" in results
 
 
 def test_llama_benchy_parse_results_empty():
-    """Test empty input returns empty rows."""
+    """Test empty input returns empty json."""
     fw = LlamaBenchyFramework()
     results = fw.parse_results("", "", result_file=None)
 
-    assert results["rows"] == []
     assert results["json"] == {}
+    assert "stdout" in results
 
 
 def test_llama_benchy_check_prerequisites_with_uvx():

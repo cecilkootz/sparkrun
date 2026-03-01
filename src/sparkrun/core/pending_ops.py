@@ -23,7 +23,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from sparkrun.core_models.config import DEFAULT_CACHE_DIR
+from sparkrun.core.config import DEFAULT_CACHE_DIR
 
 logger = logging.getLogger(__name__)
 

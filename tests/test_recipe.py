@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import yaml
 
-from sparkrun.core_models.recipe import (
+from sparkrun.core.recipe import (
     Recipe, RecipeError,
     find_recipe, list_recipes, resolve_runtime,
     is_recipe_file, discover_cwd_recipes,
@@ -1076,7 +1076,7 @@ class TestFindRecipePrefix:
 
     def test_parse_at_prefix(self, tmp_recipe_dir):
         """Test that @registry/name is parsed correctly."""
-        from sparkrun.core_models.recipe import find_recipe, RecipeError
+        from sparkrun.core.recipe import find_recipe, RecipeError
 
         # Should raise because there's no registry manager for scoped lookup
         with pytest.raises(RecipeError, match="not found"):
@@ -1084,8 +1084,8 @@ class TestFindRecipePrefix:
 
     def test_find_recipe_ambiguous_raises(self, tmp_path):
         """Test that ambiguous matches raise RecipeAmbiguousError."""
-        from sparkrun.core_models.recipe import find_recipe, RecipeAmbiguousError
-        from sparkrun.core_models.registry import RegistryManager, RegistryEntry
+        from sparkrun.core.recipe import find_recipe, RecipeAmbiguousError
+        from sparkrun.core.registry import RegistryManager, RegistryEntry
 
         config = tmp_path / "config"
         cache = tmp_path / "cache"
@@ -1113,8 +1113,8 @@ class TestFindRecipePrefix:
 
     def test_scoped_find_resolves_ambiguity(self, tmp_path):
         """Test that @registry/name resolves ambiguity."""
-        from sparkrun.core_models.recipe import find_recipe
-        from sparkrun.core_models.registry import RegistryManager, RegistryEntry
+        from sparkrun.core.recipe import find_recipe
+        from sparkrun.core.registry import RegistryManager, RegistryEntry
 
         config = tmp_path / "config"
         cache = tmp_path / "cache"
@@ -1141,8 +1141,8 @@ class TestFindRecipePrefix:
 
     def test_scoped_find_not_found(self, tmp_path):
         """Test that scoped find raises RecipeError when not found."""
-        from sparkrun.core_models.recipe import find_recipe, RecipeError
-        from sparkrun.core_models.registry import RegistryManager, RegistryEntry
+        from sparkrun.core.recipe import find_recipe, RecipeError
+        from sparkrun.core.registry import RegistryManager, RegistryEntry
 
         config = tmp_path / "config"
         cache = tmp_path / "cache"

@@ -17,7 +17,7 @@ from sparkrun.models.download import (
     resolve_gguf_path,
     download_model,
 )
-from sparkrun.models.distribute import _model_cache_path
+from sparkrun.models.download import model_cache_path
 
 
 # ---------------------------------------------------------------------------
@@ -180,18 +180,18 @@ class TestIsModelCachedGguf:
 
 
 # ---------------------------------------------------------------------------
-# _model_cache_path (GGUF-aware)
+# model_cache_path (GGUF-aware)
 # ---------------------------------------------------------------------------
 
 class TestModelCachePathGguf:
 
     def test_strips_quant_variant(self):
-        path = _model_cache_path("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", "/hf/cache")
+        path = model_cache_path("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", "/hf/cache")
         assert path == "/hf/cache/hub/models--Qwen--Qwen3-1.7B-GGUF"
         assert "Q4_K_M" not in path
 
     def test_non_gguf_unchanged(self):
-        path = _model_cache_path("meta-llama/Llama-3-8B", "/hf/cache")
+        path = model_cache_path("meta-llama/Llama-3-8B", "/hf/cache")
         assert path == "/hf/cache/hub/models--meta-llama--Llama-3-8B"
 
 

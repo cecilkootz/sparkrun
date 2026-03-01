@@ -12,7 +12,6 @@ import click
 from ._common import (
     PROFILE_NAME,
     RECIPE_NAME,
-    _apply_cluster_user,
     _apply_tp_trimming,
     _display_vram_estimate,
     _expand_recipe_shortcut,
@@ -92,10 +91,11 @@ def _run_benchmark(
         bench_timeout, dry_run,
 ):
     """Execute the full benchmark flow: launch inference -> benchmark -> stop."""
-    from sparkrun.benchmarking.base import BenchmarkSpec, export_results
-    from sparkrun.bootstrap import init_sparkrun, get_runtime, get_benchmarking_framework
-    from sparkrun.core_models.config import SparkrunConfig
-    from sparkrun.core_models.hosts import is_local_host
+    from sparkrun.benchmarking.base import export_results
+    from ..core.benchmark_profiles import BenchmarkSpec
+    from sparkrun.core.bootstrap import init_sparkrun, get_runtime, get_benchmarking_framework
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.hosts import is_local_host
     from sparkrun.orchestration.primitives import (
         build_ssh_kwargs,
         detect_host_ip,
@@ -126,9 +126,9 @@ def _run_benchmark(
     bench_args: dict = {}
 
     if profile:
-        from ..core_models.benchmark_profiles import find_benchmark_profile
-        from ..core_models.benchmark_profiles import ProfileAmbiguousError
-        from ..core_models.benchmark_profiles import ProfileError
+        from ..core.benchmark_profiles import find_benchmark_profile
+        from ..core.benchmark_profiles import ProfileAmbiguousError
+        from ..core.benchmark_profiles import ProfileError
         try:
             profile_path = find_benchmark_profile(profile, config, _registry_mgr)
         except (ProfileError, ProfileAmbiguousError) as e:
@@ -202,7 +202,6 @@ def _run_benchmark(
         click.echo("Warning: %s" % issue, err=True)
 
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
-    _apply_cluster_user(config, cluster_name, hosts, hosts_file, cluster_mgr)
 
     # TP validation / trimming
     if len(host_list) > 1 and not solo:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sparkrun.core_models.cluster_manager import ClusterManager, ClusterError
+from sparkrun.core.cluster_manager import ClusterManager, ClusterError
 
 
 def test_create_cluster(tmp_path: Path):

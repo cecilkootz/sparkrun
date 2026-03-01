@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from sparkrun.bootstrap import init_sparkrun
+from sparkrun.core.bootstrap import init_sparkrun
 
 
 @pytest.fixture(autouse=True)
@@ -20,10 +19,10 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     Also resets the bootstrap singleton between tests.
     """
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
-    import sparkrun.bootstrap
-    sparkrun.bootstrap._variables = None
+    import sparkrun.core.bootstrap
+    sparkrun.core.bootstrap._variables = None
     yield
-    sparkrun.bootstrap._variables = None
+    sparkrun.core.bootstrap._variables = None
 
 
 @pytest.fixture
@@ -138,8 +137,8 @@ def v(tmp_path: Path) -> Any:
         Initialized Variables instance.
     """
     # Reset global singleton to ensure test isolation
-    import sparkrun.bootstrap
-    sparkrun.bootstrap._variables = None
+    import sparkrun.core.bootstrap
+    sparkrun.core.bootstrap._variables = None
 
     return init_sparkrun(log_level="WARNING")
 

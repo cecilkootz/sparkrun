@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from sparkrun.core_models.config import resolve_cache_dir
+from sparkrun.core.config import resolve_cache_dir
 from sparkrun.orchestration.primitives import sync_resource_to_hosts
 from sparkrun.scripts import read_script
 

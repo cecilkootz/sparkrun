@@ -14,7 +14,7 @@ from sparkrun.runtimes.base import RuntimePlugin
 from sparkrun.runtimes.vllm_ray import _VLLM_FLAG_MAP, _VLLM_BOOL_FLAGS
 
 if TYPE_CHECKING:
-    from sparkrun.core_models.recipe import Recipe
+    from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 

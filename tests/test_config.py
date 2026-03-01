@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from sparkrun.core_models.config import SparkrunConfig, DEFAULT_CACHE_DIR, DEFAULT_HF_CACHE_DIR
+from sparkrun.core.config import SparkrunConfig, DEFAULT_CACHE_DIR, DEFAULT_HF_CACHE_DIR
 
 
 def test_config_defaults_no_file(tmp_path: Path):
@@ -332,14 +332,14 @@ def test_config_empty_defaults_section(tmp_path: Path):
 
 def test_get_config_root_without_variables():
     """get_config_root without Variables returns DEFAULT_CONFIG_DIR."""
-    from sparkrun.core_models.config import get_config_root, DEFAULT_CONFIG_DIR
+    from sparkrun.core.config import get_config_root, DEFAULT_CONFIG_DIR
     result = get_config_root()
     assert result == DEFAULT_CONFIG_DIR
 
 
 def test_get_config_root_with_variables(v):
     """get_config_root with initialized Variables returns SAF stateful root."""
-    from sparkrun.core_models.config import get_config_root
+    from sparkrun.core.config import get_config_root
     result = get_config_root(v)
     # Should be a Path (either SAF root or default)
     assert isinstance(result, Path)
@@ -347,7 +347,7 @@ def test_get_config_root_with_variables(v):
 
 def test_get_config_root_none_variables():
     """get_config_root(None) returns DEFAULT_CONFIG_DIR."""
-    from sparkrun.core_models.config import get_config_root, DEFAULT_CONFIG_DIR
+    from sparkrun.core.config import get_config_root, DEFAULT_CONFIG_DIR
     result = get_config_root(None)
     assert result == DEFAULT_CONFIG_DIR
 

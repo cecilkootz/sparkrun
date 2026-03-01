@@ -8,7 +8,7 @@ from unittest import mock
 import pytest
 import yaml
 
-from sparkrun.core_models.registry import (
+from sparkrun.core.registry import (
     FALLBACK_DEFAULT_REGISTRIES,
     RESERVED_NAME_PREFIXES,
     RegistryEntry,
@@ -873,7 +873,7 @@ class TestDeprecatedRegistries:
         mgr.add_registry(entry)
 
         # Temporarily patch DEPRECATED_REGISTRIES with a URL
-        from sparkrun.core_models import registry as reg_module
+        from sparkrun.core import registry as reg_module
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             reg_module.DEPRECATED_REGISTRIES = ["https://example.com/old/repo"]
@@ -889,7 +889,7 @@ class TestDeprecatedRegistries:
         entry = RegistryEntry(name="dotgit-reg", url="https://example.com/org/repo.git", subpath="r")
         mgr.add_registry(entry)
 
-        from sparkrun.core_models import registry as reg_module
+        from sparkrun.core import registry as reg_module
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             # Deprecated list has URL without .git, entry has .git
@@ -904,7 +904,7 @@ class TestDeprecatedRegistries:
         entry = RegistryEntry(name="some-name", url="https://example.com/safe/repo", subpath="r")
         mgr.add_registry(entry)
 
-        from sparkrun.core_models import registry as reg_module
+        from sparkrun.core import registry as reg_module
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             # Put the name in DEPRECATED_REGISTRIES — should NOT match
@@ -1031,7 +1031,7 @@ class TestLoadRegistriesFiltersDeprecated:
         ]
         mgr._save_registries(entries)
 
-        from sparkrun.core_models import registry as reg_module
+        from sparkrun.core import registry as reg_module
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             reg_module.DEPRECATED_REGISTRIES = ["https://example.com/old/repo"]
@@ -1049,7 +1049,7 @@ class TestLoadRegistriesFiltersDeprecated:
         ]
         mgr._save_registries(entries)
 
-        from sparkrun.core_models import registry as reg_module
+        from sparkrun.core import registry as reg_module
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             reg_module.DEPRECATED_REGISTRIES = ["https://example.com/other/repo"]
@@ -1294,7 +1294,7 @@ class TestInitDefaultsFromManifests:
                 raise RegistryError("clone failed")
             return good_entries
 
-        from sparkrun.core_models import registry as reg_module
+        from sparkrun.core import registry as reg_module
         original = reg_module.DEFAULT_REGISTRIES_GIT
         try:
             reg_module.DEFAULT_REGISTRIES_GIT = [
