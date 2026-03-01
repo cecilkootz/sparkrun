@@ -522,6 +522,70 @@ class TestClusterCommands:
         result = runner.invoke(main, ["cluster", "show", "test-cluster"])
         assert "newuser" in result.output
 
+    def test_cluster_create_with_cache_dir(self, runner, tmp_path, monkeypatch):
+        """Test creating a cluster with --cache-dir."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, [
+            "cluster", "create", "gpu-lab",
+            "--hosts", "host1,host2",
+            "--cache-dir", "/mnt/models",
+        ])
+        assert result.exit_code == 0
+
+        # Verify cache_dir is stored and shown
+        result = runner.invoke(main, ["cluster", "show", "gpu-lab"])
+        assert result.exit_code == 0
+        assert "/mnt/models" in result.output
+        assert "Cache dir:" in result.output
+
+    def test_cluster_show_displays_cache_dir(self, runner, tmp_path, monkeypatch):
+        """Test that cluster show displays Cache dir when set."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        runner.invoke(main, [
+            "cluster", "create", "with-cache",
+            "--hosts", "host1",
+            "--cache-dir", "/data/hf",
+        ])
+        result = runner.invoke(main, ["cluster", "show", "with-cache"])
+        assert result.exit_code == 0
+        assert "Cache dir:   /data/hf" in result.output
+
+    def test_cluster_show_no_cache_dir(self, runner, tmp_path, monkeypatch):
+        """Test that cluster show omits Cache dir when not set."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        runner.invoke(main, [
+            "cluster", "create", "no-cache",
+            "--hosts", "host1",
+        ])
+        result = runner.invoke(main, ["cluster", "show", "no-cache"])
+        assert result.exit_code == 0
+        assert "Cache dir:" not in result.output
+
+    def test_cluster_update_cache_dir(self, runner, cluster_setup):
+        """Test updating cluster cache_dir."""
+        result = runner.invoke(main, [
+            "cluster", "update", "test-cluster",
+            "--cache-dir", "/mnt/new-cache",
+        ])
+        assert result.exit_code == 0
+        assert "updated" in result.output.lower()
+
+        # Verify cache_dir is shown
+        result = runner.invoke(main, ["cluster", "show", "test-cluster"])
+        assert "/mnt/new-cache" in result.output
+
 
 class TestRunWithCluster:
     """Test run command with --cluster and --hosts-file options."""
@@ -2041,6 +2105,86 @@ class TestResolveClusterUser:
 
         mgr = ClusterManager(tmp_path)
         result = _resolve_cluster_user("doesnotexist", None, None, mgr)
+        assert result is None
+
+
+class TestResolveClusterCacheDir:
+    """Tests for _resolve_cluster_cache_dir helper."""
+
+    def test_returns_cache_dir_from_named_cluster(self, tmp_path, monkeypatch):
+        """Named cluster with a cache_dir returns that path."""
+        from sparkrun.cli._common import _resolve_cluster_cache_dir
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], cache_dir="/mnt/models")
+
+        result = _resolve_cluster_cache_dir("mylab", None, None, mgr)
+        assert result == "/mnt/models"
+
+    def test_returns_none_for_cluster_without_cache_dir(self, tmp_path, monkeypatch):
+        """Named cluster without a cache_dir returns None."""
+        from sparkrun.cli._common import _resolve_cluster_cache_dir
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("nodir", ["10.0.0.1"])
+
+        result = _resolve_cluster_cache_dir("nodir", None, None, mgr)
+        assert result is None
+
+    def test_returns_none_when_hosts_flag_given(self, tmp_path, monkeypatch):
+        """When --hosts is provided, cluster cache_dir is not resolved."""
+        from sparkrun.cli._common import _resolve_cluster_cache_dir
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], cache_dir="/mnt/models")
+
+        result = _resolve_cluster_cache_dir(None, "10.0.0.1", None, mgr)
+        assert result is None
+
+    def test_falls_back_to_default_cluster(self, tmp_path, monkeypatch):
+        """When no explicit cluster/hosts, uses default cluster's cache_dir."""
+        from sparkrun.cli._common import _resolve_cluster_cache_dir
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("default-lab", ["10.0.0.1"], cache_dir="/nfs/cache")
+        mgr.set_default("default-lab")
+
+        result = _resolve_cluster_cache_dir(None, None, None, mgr)
+        assert result == "/nfs/cache"
+
+    def test_returns_none_when_no_cluster_mgr(self):
+        """When cluster_mgr is None, returns None."""
+        from sparkrun.cli._common import _resolve_cluster_cache_dir
+
+        result = _resolve_cluster_cache_dir(None, None, None, None)
+        assert result is None
+
+    def test_returns_none_for_nonexistent_cluster(self, tmp_path, monkeypatch):
+        """Nonexistent cluster name returns None (no crash)."""
+        from sparkrun.cli._common import _resolve_cluster_cache_dir
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        result = _resolve_cluster_cache_dir("doesnotexist", None, None, mgr)
         assert result is None
 
 

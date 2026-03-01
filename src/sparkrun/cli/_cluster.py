@@ -28,8 +28,9 @@ def cluster(ctx):
 @click.option("--hosts-file", default=None, help="File with hosts (one per line)")
 @click.option("-d", "--description", default="", help="Cluster description")
 @click.option("--user", "-u", default=None, help="SSH username for this cluster")
+@click.option("--cache-dir", default=None, help="HuggingFace cache directory for this cluster")
 @click.pass_context
-def cluster_create(ctx, name, hosts, hosts_file, description, user):
+def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir):
     """Create a new named cluster."""
     from sparkrun.core.cluster_manager import ClusterError
     from sparkrun.core.hosts import parse_hosts_file
@@ -44,7 +45,7 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user):
 
     mgr = _get_cluster_manager()
     try:
-        mgr.create(name, host_list, description, user=user)
+        mgr.create(name, host_list, description, user=user, cache_dir=cache_dir)
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
     except ClusterError as e:
         click.echo(f"Error: {e}", err=True)
@@ -57,8 +58,9 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user):
 @click.option("--hosts-file", default=None, help="File with hosts (one per line)")
 @click.option("-d", "--description", default=None, help="Cluster description")
 @click.option("--user", "-u", default=None, help="SSH username for this cluster")
+@click.option("--cache-dir", default=None, help="HuggingFace cache directory for this cluster")
 @click.pass_context
-def cluster_update(ctx, name, hosts, hosts_file, description, user):
+def cluster_update(ctx, name, hosts, hosts_file, description, user, cache_dir):
     """Update an existing cluster."""
     from sparkrun.core.cluster_manager import ClusterError
     from sparkrun.core.hosts import parse_hosts_file
@@ -69,13 +71,13 @@ def cluster_update(ctx, name, hosts, hosts_file, description, user):
     elif hosts_file:
         host_list = parse_hosts_file(hosts_file)
 
-    if host_list is None and description is None and user is None:
-        click.echo("Error: Nothing to update. Provide --hosts, --hosts-file, -d, or --user.", err=True)
+    if host_list is None and description is None and user is None and cache_dir is None:
+        click.echo("Error: Nothing to update. Provide --hosts, --hosts-file, -d, --user, or --cache-dir.", err=True)
         sys.exit(1)
 
     mgr = _get_cluster_manager()
     try:
-        mgr.update(name, hosts=host_list, description=description, user=user)
+        mgr.update(name, hosts=host_list, description=description, user=user, cache_dir=cache_dir)
         click.echo(f"Cluster '{name}' updated.")
     except ClusterError as e:
         click.echo(f"Error: {e}", err=True)
@@ -131,6 +133,8 @@ def cluster_show(ctx, name):
     click.echo(f"Description: {c.description or '(none)'}")
     if c.user:
         click.echo(f"User:        {c.user}")
+    if c.cache_dir:
+        click.echo(f"Cache dir:   {c.cache_dir}")
     click.echo(f"Default:     {'yes' if c.name == default_name else 'no'}")
     click.echo(f"Hosts ({len(c.hosts)}):")
     for h in c.hosts:
