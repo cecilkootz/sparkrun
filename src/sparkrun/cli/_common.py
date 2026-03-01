@@ -237,9 +237,14 @@ def _resolve_cluster_cache_dir(
 
     Returns the cluster's configured cache_dir, or None if no cluster is
     resolved or the cluster has no cache_dir set.
+
+    Mirrors the priority chain of core.hosts.resolve_hosts(): if hosts or
+    hosts_file is provided, the cluster is not used, so neither should cache_dir.
     """
+    if hosts or hosts_file:
+        return None
     resolved = cluster_name
-    if not resolved and not hosts and not hosts_file:
+    if not resolved:
         resolved = cluster_mgr.get_default() if cluster_mgr else None
     if resolved:
         try:

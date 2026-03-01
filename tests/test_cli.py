@@ -2175,6 +2175,38 @@ class TestResolveClusterCacheDir:
         result = _resolve_cluster_cache_dir(None, "10.0.0.1", None, mgr)
         assert result is None
 
+    def test_returns_none_when_cluster_and_hosts_both_given(self, tmp_path, monkeypatch):
+        """When both --cluster and --hosts are provided, cluster cache_dir is not resolved.
+
+        resolve_hosts() ignores the cluster when --hosts is set; cache_dir resolution
+        must match that priority chain so they stay in sync.
+        """
+        from sparkrun.cli._common import _resolve_cluster_cache_dir
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], cache_dir="/mnt/models")
+
+        result = _resolve_cluster_cache_dir("mylab", "10.0.0.2", None, mgr)
+        assert result is None
+
+    def test_returns_none_when_cluster_and_hosts_file_both_given(self, tmp_path, monkeypatch):
+        """When both --cluster and --hosts-file are provided, cluster cache_dir is not resolved."""
+        from sparkrun.cli._common import _resolve_cluster_cache_dir
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"], cache_dir="/mnt/models")
+
+        result = _resolve_cluster_cache_dir("mylab", None, "/some/hosts.txt", mgr)
+        assert result is None
+
     def test_falls_back_to_default_cluster(self, tmp_path, monkeypatch):
         """When no explicit cluster/hosts, uses default cluster's cache_dir."""
         from sparkrun.cli._common import _resolve_cluster_cache_dir
