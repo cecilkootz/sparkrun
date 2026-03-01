@@ -35,7 +35,7 @@ sparkrun benchmark qwen3-1.7b-vllm --solo --dry-run
 The benchmark command follows a three-step flow:
 
 1. **Launch inference** — Starts the inference server using the same logic as `sparkrun run`. The server's `served_model_name` is suppressed so the benchmark framework can address the model by its HuggingFace ID.
-2. **Run benchmark** — Executes the benchmarking framework (default: [llama-benchy](https://github.com/meta-llama/llama-benchy)) against the running server. Results are streamed live and captured for export.
+2. **Run benchmark** — Executes the benchmarking framework (default: [llama-benchy](https://github.com/eugr/llama-benchy)) against the running server. Results are streamed live and captured for export.
 3. **Stop inference** — Stops the inference server after benchmarking completes.
 
 Each step can be controlled independently:
