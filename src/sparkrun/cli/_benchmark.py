@@ -517,18 +517,14 @@ def _run_benchmark(
             if rows:
                 click.echo("")
                 click.echo("Results: %d test row(s) collected" % len(rows))
-            elif stdout_text.strip():
-                click.echo("")
-                click.echo("Raw output:")
-                for line in stdout_text.strip().splitlines()[:20]:
-                    click.echo("  %s" % line)
 
             # Export results
             if not output_file:
                 profile_slug = profile.replace("/", "_").replace("@", "") if profile else "default"
-                output_file = "benchmark_%s_%s.yaml" % (
+                output_file = "benchmark_%s_%s_tp%d.yaml" % (
                     recipe.name.replace("/", "_"),
                     profile_slug,
+                    effective_tp,
                 )
 
             export_results(
