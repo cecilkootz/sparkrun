@@ -166,6 +166,11 @@ def distribute_resources(
         ib_result.ib_ip_map, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
     )
 
+    # TODO: further refinement, if hosts > 1 (multiple hosts) and IB unreachable from control machine (sparkrun node)
+    #       then we should check if the head node can reach the other hosts -- if so, then we
+    #       we should use the head node as the transfer host for all other hosts
+    #       instead of doing it from local
+
     if ib_ip_map:
         transfer_hosts = [
             ib_result.ib_ip_map.get(h, h) for h in host_list
