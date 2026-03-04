@@ -703,6 +703,17 @@ class RuntimePlugin(Plugin):
 
         if dry_run:
             return 0
+
+        if result.returncode != 0:
+            # Serve process failed to start — print captured output
+            logger.error("Serve process failed to start (rc=%d)", result.returncode)
+            if result.stderr:
+                for line in result.stderr.rstrip().splitlines():
+                    logger.error("  %s", line)
+            elif result.stdout:
+                for line in result.stdout.rstrip().splitlines():
+                    logger.error("  %s", line)
+
         return result.returncode
 
     def _stop_solo(
