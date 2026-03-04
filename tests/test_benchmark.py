@@ -277,8 +277,8 @@ def test_llama_benchy_default_args():
     assert defaults["pp"] == [2048]
     assert "depth" in defaults
     assert defaults["depth"] == [0]
-    assert "enable_prefix_caching" in defaults
-    assert defaults["enable_prefix_caching"] is True
+    assert "prefix_caching" in defaults
+    assert defaults["prefix_caching"] is True
 
 
 def test_llama_benchy_build_command():
