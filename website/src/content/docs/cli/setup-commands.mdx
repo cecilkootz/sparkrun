@@ -141,3 +141,41 @@ sparkrun setup clear-cache --cluster mylab --dry-run
 Use `--save-sudo` to install a minimal sudoers rule that permits **only** writing to `/proc/sys/vm/drop_caches` — no broader privileges are granted. After this, sparkrun automatically clears the page cache before every container launch without prompting for a password.
 
 See [Linux page cache consuming memory](/getting-started/troubleshooting/#linux-page-cache-consuming-memory) for background on why this matters.
+
+## Install earlyoom OOM killer
+
+```bash
+sparkrun setup earlyoom [options]
+```
+
+Install and configure [earlyoom](https://github.com/rfjakob/earlyoom) on cluster hosts. earlyoom monitors available memory and proactively kills processes before the kernel OOM killer triggers, preventing system hangs when large inference models exhaust DGX Spark's unified CPU/GPU memory.
+
+sparkrun configures earlyoom with inference-aware defaults:
+- **Prefer killing** (on OOM): vllm, sglang, llama-server, llama-cli, trtllm, tritonserver, python
+- **Avoid killing** (protect): systemd, sshd, dockerd, containerd, dbus-daemon, NetworkManager
+- **Trigger**: 2% available memory (~2.5 GB on 128 GB DGX Spark), swap ignored
+
+```bash
+sparkrun setup earlyoom --cluster mylab
+sparkrun setup earlyoom --hosts 10.24.11.13,10.24.11.14
+sparkrun setup earlyoom --cluster mylab --prefer "my-worker,my-app"
+sparkrun setup earlyoom --cluster mylab --dry-run
+```
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Comma-separated host list |
+| `--hosts-file` | File with hosts (one per line, `#` comments) |
+| `--cluster` | Use a saved cluster definition |
+| `--user` / `-u` | SSH username (default: from cluster config or current user) |
+| `--prefer` | Additional comma-separated process patterns to prefer killing on OOM |
+| `--avoid` | Additional comma-separated process patterns to avoid killing on OOM |
+| `--dry-run` / `-n` | Show what would be done without executing |
+
+The command installs earlyoom via `apt-get`, writes `/etc/default/earlyoom` with the configured `--prefer` and `--avoid` patterns, sets up a systemd override for `CAP_KILL` capabilities, and enables the service. Requires sudo on target hosts — you may be prompted for a sudo password if passwordless sudo is not configured.
+
+Use `--prefer` and `--avoid` to add custom process patterns to the defaults. For example, `--prefer "my-worker"` adds `my-worker` to the list of processes earlyoom will kill first on OOM.
+
+:::tip
+We recommend installing earlyoom as part of your initial cluster setup. Running large models near the memory limit without earlyoom can cause the system to become completely unresponsive, requiring a hard reboot.
+:::

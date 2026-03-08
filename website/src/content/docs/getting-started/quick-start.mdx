@@ -67,6 +67,16 @@ This detects CX-7 interfaces, picks two conflict-free subnets, and configures ev
 
 sparkrun automatically discovers the CX-7 interfaces on each host and uses them for high-bandwidth operations (model sync, container distribution, NCCL).
 
+### 4. Install earlyoom (recommended)
+
+Install the [earlyoom](https://github.com/rfjakob/earlyoom) OOM killer on your Sparks. Large inference models can exhaust DGX Spark's unified memory, causing the system to hang. earlyoom proactively terminates inference processes before the kernel OOM killer triggers, keeping your nodes responsive:
+
+```bash
+sparkrun setup earlyoom
+```
+
+sparkrun configures earlyoom with inference-aware defaults — it prefers killing vllm, sglang, and llama-server processes first, while protecting system services like sshd and dockerd. Requires sudo — you'll be prompted for a password if passwordless sudo isn't configured.
+
 ## Run an inference job
 
 ```bash

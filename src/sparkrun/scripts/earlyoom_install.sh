@@ -21,11 +21,11 @@ fi
 EARLYOOM_CONF="/etc/default/earlyoom"
 sudo -n tee "$EARLYOOM_CONF" > /dev/null << CONF_EOF
 # Configured by: sparkrun setup earlyoom
-# -m 3    : trigger at 3% available memory
-# -s 10   : trigger at 10% available swap
+# -m 2    : trigger at 2% available memory (~2.5 GB on 128 GB DGX Spark)
+# -s 0    : ignore swap (RAM-only trigger)
 # --prefer: processes to kill first on OOM (inference workloads)
 # --avoid : processes to protect from OOM kill
-EARLYOOM_ARGS="-m 3 -s 10 --prefer '$PREFER' --avoid '$AVOID'"
+EARLYOOM_ARGS="-m 2 -s 0 --prefer '$PREFER' --avoid '$AVOID'"
 CONF_EOF
 echo "CONFIGURED: $EARLYOOM_CONF"
 
