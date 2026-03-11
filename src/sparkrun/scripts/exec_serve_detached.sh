@@ -4,6 +4,9 @@ set -uo pipefail
 echo "Executing serve command in container {container_name} (detached)..."
 docker exec {container_name} bash -c "nohup bash -c '{full_cmd}' > /tmp/sparkrun_serve.log 2>&1 & echo \$! > /tmp/sparkrun_serve.pid"
 
+# Watchdog: when serve process exits, kill sleep infinity (PID 1) so container exits
+docker exec -d {container_name} bash -c 'SERVE_PID=$(cat /tmp/sparkrun_serve.pid); while kill -0 $SERVE_PID 2>/dev/null; do sleep 5; done; kill 1'
+
 # Wait for process to start and produce initial output
 sleep 3
 

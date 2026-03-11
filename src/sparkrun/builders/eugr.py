@@ -122,7 +122,7 @@ class EugrBuilder(BuilderPlugin):
             return
 
         for mod_name in mods:
-            mod_path = self._repo_dir / mod_name
+            mod_path = self._repo_dir / 'mods' / mod_name
             mod_basename = Path(mod_name).name
             dest = "/workspace/mods/%s" % mod_basename
 

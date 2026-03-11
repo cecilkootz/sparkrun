@@ -94,7 +94,7 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
     if dry_run:
         click.echo("")
         click.echo("[dry-run] Would write litellm config and start proxy on %s:%d"
-                    % (effective_host, effective_port))
+                   % (effective_host, effective_port))
         if aliases:
             click.echo("[dry-run] Aliases: %s" % aliases)
         return
@@ -119,7 +119,7 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
         click.echo("Proxy started. API: http://localhost:%d/v1" % effective_port)
         if effective_key:
             click.echo("Management API key: %s" % effective_key)
-        click.echo("Log: %s" % (engine.state_dir / "litellm.log"))
+        # click.echo("Log: %s" % (engine.state_dir / "litellm.log"))
 
 
 # ---------------------------------------------------------------------------
@@ -476,9 +476,9 @@ def unload_cmd(recipe_name, hosts, hosts_file, cluster_name, dry_run):
 # ---------------------------------------------------------------------------
 
 def _resolve_host_filter(
-    cluster_name: str | None,
-    hosts: str | None,
-    hosts_file: str | None,
+        cluster_name: str | None,
+        hosts: str | None,
+        hosts_file: str | None,
 ) -> list[str] | None:
     """Resolve host filter from CLI args without exiting on empty.
 
