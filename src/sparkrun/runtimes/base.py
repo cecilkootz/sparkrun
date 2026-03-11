@@ -262,6 +262,40 @@ class RuntimePlugin(Plugin):
         return int(tp_val)
 
     @staticmethod
+    def _augment_served_model_name(
+            command: str,
+            config,
+            flag: str,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
+    ) -> str:
+        """Append ``served_model_name`` to a rendered command if missing.
+
+        When a recipe uses an explicit command template that omits the
+        ``{served_model_name}`` placeholder, CLI overrides for
+        ``--served-model-name`` are silently dropped.  This helper
+        checks whether the override was consumed and appends the
+        appropriate flag if not.
+
+        Args:
+            command: The rendered command string.
+            config: Config chain (must support ``.get(key)``).
+            flag: The CLI flag to use (e.g. ``"--served-model-name"``
+                or ``"--alias"`` for llama.cpp).
+            skip_keys: Keys being suppressed (e.g. by benchmark flow).
+
+        Returns:
+            The command string, possibly with the flag appended.
+        """
+        if "served_model_name" in skip_keys:
+            return command
+        value = config.get("served_model_name")
+        if value is None:
+            return command
+        if flag in command:
+            return command
+        return "%s %s %s" % (command.rstrip(), flag, value)
+
+    @staticmethod
     def build_flags_from_map(
             config,
             flag_map: dict[str, str],
