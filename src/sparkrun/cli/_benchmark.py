@@ -43,7 +43,7 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 @click.option("--framework", default=None, help="Override benchmarking framework (default: llama-benchy)")
 @click.option("--out", "--output", "output_file", default=None, type=click.Path(),
               help="Output file for results YAML")
-@click.option("-b", "--bench-option", "bench_options", multiple=True,
+@click.option("-b", "--benchmark-option", "bench_options", multiple=True,
               help="Override benchmark arg: -b key=value (repeatable)")
 @click.option("--exit-on-first-fail/--no-exit-on-first-fail", "exit_on_first_fail", default=True,
               help="Abort benchmark on first failure and skip saving results (default: enabled)")
