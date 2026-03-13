@@ -1,4 +1,4 @@
-"""Tests for sparkrun proxy package — discovery, config, engine, loader, CLI."""
+"""Tests for sparkrun proxy package — discovery, config, engine, CLI."""
 
 from __future__ import annotations
 
@@ -361,9 +361,11 @@ class TestDiscovery:
         """Endpoints on different IPs serving same models are deduplicated."""
         from sparkrun.proxy.discovery import discover_endpoints
 
-        # Two metadata files for the same server on different network interfaces
-        meta_mgmt = {
-            "cluster_id": "sparkrun_mgmt",
+        # Two metadata files for the same server on different network interfaces.
+        # Neither carries ib_ip_map/mgmt_ip_map, so they get different host:port
+        # keys and rely on identity dedup after health checks.
+        meta_old = {
+            "cluster_id": "sparkrun_old",
             "recipe": "qwen3-sglang",
             "model": "Qwen/Qwen3.5-35B",
             "runtime": "sglang",
@@ -371,8 +373,8 @@ class TestDiscovery:
             "port": 8000,
             "tensor_parallel": 1,
         }
-        meta_cx7 = {
-            "cluster_id": "sparkrun_cx7",
+        meta_new = {
+            "cluster_id": "sparkrun_new",
             "recipe": "qwen3-sglang",
             "model": "Qwen/Qwen3.5-35B",
             "runtime": "sglang",
@@ -381,11 +383,14 @@ class TestDiscovery:
             "tensor_parallel": 1,
         }
 
-        # "aaa_" prefix ensures management IP metadata is sorted first
-        with open(jobs_dir / "aaa_mgmt.yaml", "w") as f:
-            yaml.safe_dump(meta_mgmt, f)
-        with open(jobs_dir / "zzz_cx7.yaml", "w") as f:
-            yaml.safe_dump(meta_cx7, f)
+        import time
+        # Older metadata file
+        with open(jobs_dir / "old.yaml", "w") as f:
+            yaml.safe_dump(meta_old, f)
+        time.sleep(0.05)
+        # Newer metadata file
+        with open(jobs_dir / "new.yaml", "w") as f:
+            yaml.safe_dump(meta_new, f)
 
         cache_dir = str(jobs_dir.parent)
 
@@ -408,8 +413,149 @@ class TestDiscovery:
 
         # Should be deduplicated to 1 endpoint (same models on same port)
         assert len(endpoints) == 1
-        # First metadata file wins — management IP kept
-        assert endpoints[0].host == "192.168.11.14"
+        # Newest metadata file wins
+        assert endpoints[0].host == "10.24.11.14"
+
+    def test_dedup_ib_to_mgmt_normalization(self, jobs_dir: Path):
+        """IB IPs are normalised to management IPs via ib_ip_map."""
+        from sparkrun.proxy.discovery import discover_endpoints
+
+        # Stale metadata with IB IP as host (no maps — old format)
+        meta_stale = {
+            "cluster_id": "sparkrun_stale",
+            "recipe": "old-recipe",
+            "model": "Qwen/Qwen3-1.7B",
+            "runtime": "vllm",
+            "hosts": ["192.168.11.13"],
+            "port": 8000,
+            "tensor_parallel": 1,
+        }
+        # Current metadata with mgmt IP and ib_ip_map
+        meta_current = {
+            "cluster_id": "sparkrun_current",
+            "recipe": "new-recipe",
+            "model": "Qwen/Qwen3.5-0.8B",
+            "runtime": "sglang",
+            "hosts": ["10.24.11.13"],
+            "port": 8000,
+            "tensor_parallel": 2,
+            "ib_ip_map": {"10.24.11.13": "192.168.11.13"},
+            "mgmt_ip_map": {"10.24.11.13": "10.24.11.13"},
+        }
+
+        import time
+        with open(jobs_dir / "stale.yaml", "w") as f:
+            yaml.safe_dump(meta_stale, f)
+        time.sleep(0.05)
+        with open(jobs_dir / "current.yaml", "w") as f:
+            yaml.safe_dump(meta_current, f)
+
+        cache_dir = str(jobs_dir.parent)
+
+        endpoints = discover_endpoints(cache_dir=cache_dir, check_health=False)
+
+        # IB IP 192.168.11.13 normalised to 10.24.11.13 via ib_to_mgmt map,
+        # so both entries share the same host:port key. Newest wins.
+        assert len(endpoints) == 1
+        assert endpoints[0].host == "10.24.11.13"
+        assert endpoints[0].recipe_name == "new-recipe"
+        assert endpoints[0].runtime == "sglang"
+
+    def test_discover_live_uses_running_containers(self, tmp_path: Path):
+        """Live discovery builds endpoints from query_cluster_status results."""
+        from sparkrun.proxy.discovery import discover_endpoints
+        from sparkrun.core.cluster_manager import ClusterGroup, ClusterStatusResult
+
+        jobs_dir = tmp_path / "jobs"
+        jobs_dir.mkdir()
+        cache_dir = str(tmp_path)
+
+        # Save metadata for the running cluster
+        meta = {
+            "cluster_id": "sparkrun_abc123",
+            "recipe": "qwen3.5-0.8b-bf16-sglang",
+            "model": "Qwen/Qwen3.5-0.8B",
+            "runtime": "sglang",
+            "hosts": ["10.24.11.13", "10.24.11.14"],
+            "port": 8000,
+            "tensor_parallel": 2,
+            "served_model_name": "qwen3.5-0.8b",
+            "mgmt_ip_map": {"10.24.11.13": "10.24.11.13", "10.24.11.14": "10.24.11.14"},
+        }
+        with open(jobs_dir / "abc123.yaml", "w") as f:
+            yaml.safe_dump(meta, f)
+
+        # Also save stale metadata on the same host:port (should be ignored)
+        stale = {
+            "cluster_id": "sparkrun_old999",
+            "recipe": "nemotron3-super-120b-nvfp4-trtllm",
+            "model": "nvidia/NVIDIA-Nemotron-3-Super-120B",
+            "runtime": "trtllm",
+            "hosts": ["10.24.11.13"],
+            "port": 8000,
+            "tensor_parallel": 1,
+        }
+        with open(jobs_dir / "old999.yaml", "w") as f:
+            yaml.safe_dump(stale, f)
+
+        # Mock query_cluster_status to return only the running cluster
+        mock_result = ClusterStatusResult(
+            groups={
+                "sparkrun_abc123": ClusterGroup(
+                    cluster_id="sparkrun_abc123",
+                    members=[
+                        ("10.24.11.13", "node_0", "Up 5 minutes", "sglang:latest"),
+                        ("10.24.11.14", "node_1", "Up 5 minutes", "sglang:latest"),
+                    ],
+                    meta=meta,
+                ),
+            },
+            solo_entries=[],
+            errors={},
+            idle_hosts=[],
+            pending_ops=[],
+            total_containers=2,
+            host_count=2,
+        )
+
+        with patch(
+            "sparkrun.core.cluster_manager.query_cluster_status",
+            return_value=mock_result,
+        ):
+            endpoints = discover_endpoints(
+                cache_dir=cache_dir,
+                check_health=False,
+                host_list=["10.24.11.13", "10.24.11.14"],
+                ssh_kwargs={"ssh_user": "drew"},
+            )
+
+        # Only the actually-running cluster should appear
+        assert len(endpoints) == 1
+        ep = endpoints[0]
+        assert ep.cluster_id == "sparkrun_abc123"
+        assert ep.recipe_name == "qwen3.5-0.8b-bf16-sglang"
+        assert ep.runtime == "sglang"
+        assert ep.host == "10.24.11.13"
+        assert ep.tensor_parallel == 2
+        assert ep.served_model_name == "qwen3.5-0.8b"
+
+    def test_discover_live_fallback_on_failure(self, populated_jobs_dir: Path):
+        """Falls back to metadata discovery when live query fails."""
+        from sparkrun.proxy.discovery import discover_endpoints
+
+        with patch(
+            "sparkrun.core.cluster_manager.query_cluster_status",
+            side_effect=RuntimeError("SSH failed"),
+        ):
+            endpoints = discover_endpoints(
+                cache_dir=str(populated_jobs_dir),
+                check_health=False,
+                host_list=["10.24.11.13"],
+                ssh_kwargs={"ssh_user": "drew"},
+            )
+
+        # Should still find endpoints via metadata fallback
+        assert len(endpoints) > 0
 
 
 # =====================================================================
@@ -509,8 +655,8 @@ class TestEngineConfig:
         assert config["general_settings"]["master_key"] == "test-key"
         assert config["litellm_settings"]["drop_params"] is True
 
-    def test_build_config_with_aliases(self):
-        """Aliases are rendered as model_group_alias."""
+    def test_build_config_no_aliases_in_config(self):
+        """Aliases are no longer baked into litellm config (applied via API)."""
         from sparkrun.proxy.discovery import DiscoveredEndpoint
         from sparkrun.proxy.engine import build_litellm_config
 
@@ -526,12 +672,10 @@ class TestEngineConfig:
                 actual_models=["Qwen/Qwen3-1.7B"],
             ),
         ]
-        aliases = {"my-qwen": "Qwen/Qwen3-1.7B", "default": "Qwen/Qwen3-1.7B"}
 
-        config = build_litellm_config(endpoints, aliases=aliases)
+        config = build_litellm_config(endpoints)
 
-        assert "router_settings" in config
-        assert config["router_settings"]["model_group_alias"] == aliases
+        assert "router_settings" not in config
 
     def test_build_config_skips_unhealthy(self):
         """Unhealthy endpoints are excluded from config."""
@@ -907,97 +1051,137 @@ class TestEngineManagementAPI:
 
 
 # =====================================================================
-# Tests: Loader
+# Tests: Engine — alias API
 # =====================================================================
 
-class TestLoader:
-    """Test model load/unload subprocess delegation."""
+class TestEngineAliasAPI:
+    """Test API-based alias management methods."""
 
-    def test_load_model_command(self):
-        """load_model constructs correct sparkrun run command."""
-        from sparkrun.proxy.loader import load_model
+    def test_add_alias_via_api(self, state_dir: Path):
+        """add_alias_via_api finds target backends and registers alias."""
+        from sparkrun.proxy.engine import ProxyEngine
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
+        engine = ProxyEngine(state_dir=state_dir)
 
-        with patch("shutil.which", return_value="/usr/bin/sparkrun"), \
-             patch("subprocess.run", return_value=mock_result) as mock_run:
-            result = load_model(
-                "qwen3-1.7b-vllm",
-                cluster="mylab",
-                port=9000,
-                overrides={"gpu_memory_utilization": 0.8},
-            )
+        registered = [
+            {
+                "model_name": "Qwen/Qwen3-1.7B",
+                "litellm_params": {
+                    "model": "openai/Qwen/Qwen3-1.7B",
+                    "api_base": "http://10.0.0.1:8000/v1",
+                    "api_key": "not-needed",
+                },
+            },
+        ]
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"status": "ok"}'
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch.object(engine, "list_models_via_api", return_value=registered), \
+             patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+            result = engine.add_alias_via_api("my-model", "Qwen/Qwen3-1.7B")
 
         assert result is True
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "/usr/bin/sparkrun"
-        assert cmd[1] == "run"
-        assert "qwen3-1.7b-vllm" in cmd
-        assert "--no-follow" in cmd
-        assert "--cluster" in cmd
-        assert "mylab" in cmd
-        assert "--port" in cmd
-        assert "9000" in cmd
-        assert "-o" in cmd
+        call_args = mock_urlopen.call_args
+        req = call_args[0][0]
+        import json
+        body = json.loads(req.data)
+        assert body["model_name"] == "my-model"
+        assert body["litellm_params"]["api_base"] == "http://10.0.0.1:8000/v1"
 
-    def test_load_model_failure(self):
-        """load_model returns False on non-zero exit."""
-        from sparkrun.proxy.loader import load_model
+    def test_add_alias_target_not_found(self, state_dir: Path):
+        """add_alias_via_api returns False when target model is not registered."""
+        from sparkrun.proxy.engine import ProxyEngine
 
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stderr = "some error"
+        engine = ProxyEngine(state_dir=state_dir)
 
-        with patch("shutil.which", return_value="/usr/bin/sparkrun"), \
-             patch("subprocess.run", return_value=mock_result):
-            result = load_model("test-recipe")
+        with patch.object(engine, "list_models_via_api", return_value=[]):
+            result = engine.add_alias_via_api("my-model", "nonexistent/model")
 
         assert result is False
 
-    def test_load_model_no_sparkrun(self):
-        """load_model returns False when sparkrun not found."""
-        from sparkrun.proxy.loader import load_model
+    def test_remove_alias_via_api(self, state_dir: Path):
+        """remove_alias_via_api removes all entries with the alias name."""
+        from sparkrun.proxy.engine import ProxyEngine
 
-        with patch("shutil.which", return_value=None):
-            result = load_model("test-recipe")
+        engine = ProxyEngine(state_dir=state_dir)
 
-        assert result is False
+        registered = [
+            {
+                "model_name": "my-model",
+                "model_info": {"id": "alias-id-1"},
+                "litellm_params": {"api_base": "http://10.0.0.1:8000/v1"},
+            },
+            {
+                "model_name": "real-model",
+                "model_info": {"id": "real-id"},
+                "litellm_params": {"api_base": "http://10.0.0.1:8000/v1"},
+            },
+        ]
 
-    def test_unload_model_command(self):
-        """unload_model constructs correct sparkrun stop command."""
-        from sparkrun.proxy.loader import unload_model
+        with patch.object(engine, "list_models_via_api", return_value=registered), \
+             patch.object(engine, "remove_model_via_api", return_value=True) as mock_rm:
+            removed = engine.remove_alias_via_api("my-model")
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
+        assert removed == 1
+        mock_rm.assert_called_once_with("alias-id-1")
 
-        with patch("shutil.which", return_value="/usr/bin/sparkrun"), \
-             patch("subprocess.run", return_value=mock_result) as mock_run:
-            result = unload_model(
-                "qwen3-1.7b-vllm",
-                cluster="mylab",
-            )
+    def test_sync_aliases_adds_missing(self, state_dir: Path):
+        """sync_aliases adds aliases not yet registered."""
+        from sparkrun.proxy.engine import ProxyEngine
 
-        assert result is True
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "/usr/bin/sparkrun"
-        assert cmd[1] == "stop"
-        assert "qwen3-1.7b-vllm" in cmd
-        assert "--cluster" in cmd
+        engine = ProxyEngine(state_dir=state_dir)
 
-    def test_unload_model_dry_run(self):
-        """unload_model passes --dry-run flag."""
-        from sparkrun.proxy.loader import unload_model
+        registered = [
+            {
+                "model_name": "Qwen/Qwen3-1.7B",
+                "litellm_params": {
+                    "model": "openai/Qwen/Qwen3-1.7B",
+                    "api_base": "http://10.0.0.1:8000/v1",
+                },
+            },
+        ]
 
-        mock_result = MagicMock()
-        mock_result.returncode = 0
+        with patch.object(engine, "list_models_via_api", return_value=registered), \
+             patch.object(engine, "add_alias_via_api", return_value=True) as mock_add:
+            added, removed = engine.sync_aliases({"my-model": "Qwen/Qwen3-1.7B"})
 
-        with patch("shutil.which", return_value="/usr/bin/sparkrun"), \
-             patch("subprocess.run", return_value=mock_result) as mock_run:
-            unload_model("test-recipe", dry_run=True)
+        assert added == 1
+        assert removed == 0
+        mock_add.assert_called_once_with("my-model", "Qwen/Qwen3-1.7B")
 
-        cmd = mock_run.call_args[0][0]
-        assert "--dry-run" in cmd
+    def test_sync_aliases_skips_existing(self, state_dir: Path):
+        """sync_aliases does not re-add aliases already registered."""
+        from sparkrun.proxy.engine import ProxyEngine
+
+        engine = ProxyEngine(state_dir=state_dir)
+
+        registered = [
+            {
+                "model_name": "Qwen/Qwen3-1.7B",
+                "litellm_params": {
+                    "model": "openai/Qwen/Qwen3-1.7B",
+                    "api_base": "http://10.0.0.1:8000/v1",
+                },
+            },
+            {
+                "model_name": "my-model",
+                "litellm_params": {
+                    "model": "openai/Qwen/Qwen3-1.7B",
+                    "api_base": "http://10.0.0.1:8000/v1",
+                },
+            },
+        ]
+
+        with patch.object(engine, "list_models_via_api", return_value=registered), \
+             patch.object(engine, "add_alias_via_api") as mock_add:
+            added, removed = engine.sync_aliases({"my-model": "Qwen/Qwen3-1.7B"})
+
+        assert added == 0
+        assert removed == 0
+        mock_add.assert_not_called()
 
 
 # =====================================================================
@@ -1141,47 +1325,7 @@ class TestCLI:
         assert result.exit_code == 0
         assert "start" in result.output
         assert "stop" in result.output
-        assert "discover" in result.output
-
-    def test_discover_no_endpoints(self, tmp_path: Path):
-        """discover shows message when no endpoints found."""
-        from sparkrun.cli._proxy import proxy
-
-        runner = CliRunner()
-        with patch("sparkrun.proxy.discovery.discover_endpoints", return_value=[]):
-            result = runner.invoke(proxy, ["discover"])
-
-        assert result.exit_code == 0
-        assert "No inference endpoints found" in result.output
-
-    def test_discover_with_endpoints(self, tmp_path: Path):
-        """discover shows endpoint details."""
-        from sparkrun.proxy.discovery import DiscoveredEndpoint
-        from sparkrun.cli._proxy import proxy
-
-        endpoints = [
-            DiscoveredEndpoint(
-                cluster_id="sparkrun_abc123",
-                model="Qwen/Qwen3-1.7B",
-                served_model_name=None,
-                runtime="vllm",
-                host="192.168.11.13",
-                port=8000,
-                healthy=True,
-                actual_models=["Qwen/Qwen3-1.7B"],
-                recipe_name="qwen3-1.7b-vllm",
-                tensor_parallel=1,
-            ),
-        ]
-
-        runner = CliRunner()
-        with patch("sparkrun.proxy.discovery.discover_endpoints", return_value=endpoints):
-            result = runner.invoke(proxy, ["discover"])
-
-        assert result.exit_code == 0
-        assert "sparkrun_abc123" in result.output
-        assert "192.168.11.13" in result.output
-        assert "vllm" in result.output
+        assert "start" in result.output
 
     def test_alias_list_empty(self, tmp_path: Path):
         """alias list shows message when empty."""
@@ -1258,3 +1402,106 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert "not running" in result.output
+
+
+# =====================================================================
+# Tests: Auto-discover
+# =====================================================================
+
+class TestAutodiscover:
+    """Test auto-discovery background process."""
+
+    def test_start_autodiscover_writes_config(self, tmp_path: Path):
+        """start_autodiscover writes config YAML and spawns a subprocess."""
+        from sparkrun.proxy.engine import ProxyEngine
+
+        state_dir = tmp_path / "proxy"
+        engine = ProxyEngine(state_dir=state_dir)
+
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = MagicMock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            pid = engine.start_autodiscover(
+                proxy_pid=9999,
+                interval=60,
+                host_list=["10.24.11.13", "10.24.11.14"],
+                ssh_kwargs={"ssh_user": "drew"},
+            )
+
+        assert pid == 12345
+
+        # Verify config file was written
+        cfg_path = state_dir / "autodiscover.yaml"
+        assert cfg_path.exists()
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["proxy_pid"] == 9999
+        assert cfg["interval"] == 60
+        assert cfg["host_list"] == ["10.24.11.13", "10.24.11.14"]
+        assert cfg["ssh_kwargs"] == {"ssh_user": "drew"}
+
+    def test_stop_autodiscover_sends_sigterm(self, tmp_path: Path):
+        """stop_autodiscover sends SIGTERM to the auto-discover PID."""
+        from sparkrun.proxy.engine import ProxyEngine
+
+        state_dir = tmp_path / "proxy"
+        state_dir.mkdir(parents=True)
+        engine = ProxyEngine(state_dir=state_dir)
+
+        # Save state with autodiscover PID
+        engine._save_state(pid=100, autodiscover_pid=200)
+
+        with patch("os.kill") as mock_kill:
+            engine.stop_autodiscover()
+            mock_kill.assert_called_once_with(200, signal.SIGTERM)
+
+    def test_stop_kills_both_proxy_and_autodiscover(self, tmp_path: Path):
+        """stop() kills both proxy and auto-discover PIDs."""
+        from sparkrun.proxy.engine import ProxyEngine
+
+        state_dir = tmp_path / "proxy"
+        state_dir.mkdir(parents=True)
+        engine = ProxyEngine(state_dir=state_dir)
+
+        engine._save_state(pid=100, autodiscover_pid=200)
+
+        with patch("os.kill") as mock_kill:
+            result = engine.stop()
+
+        assert result is True
+        # Should have killed both: autodiscover (SIGTERM) and proxy (SIGTERM)
+        assert mock_kill.call_count == 2
+        mock_kill.assert_any_call(200, signal.SIGTERM)
+        mock_kill.assert_any_call(100, signal.SIGTERM)
+
+    def test_update_autodiscover_pid(self, tmp_path: Path):
+        """update_autodiscover_pid records PID in state file."""
+        from sparkrun.proxy.engine import ProxyEngine
+
+        state_dir = tmp_path / "proxy"
+        state_dir.mkdir(parents=True)
+        engine = ProxyEngine(state_dir=state_dir)
+
+        engine._save_state(pid=100)
+        assert engine._read_autodiscover_pid() is None
+
+        engine.update_autodiscover_pid(300)
+        assert engine._read_autodiscover_pid() == 300
+
+    def test_autodiscover_loop_exits_on_dead_proxy(self, tmp_path: Path):
+        """run_autodiscover exits when proxy PID is gone."""
+        from sparkrun.proxy.autodiscover import run_autodiscover
+
+        cfg_path = tmp_path / "autodiscover.yaml"
+        cfg = {
+            "proxy_pid": 999999,  # non-existent PID
+            "interval": 1,
+            "proxy_port": 4000,
+        }
+        with open(cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        # Should exit quickly since PID 999999 doesn't exist
+        run_autodiscover(str(cfg_path))

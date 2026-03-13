@@ -68,12 +68,19 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
     effective_host = bind_host or proxy_cfg.host
     effective_key = master_key if master_key is not None else proxy_cfg.master_key
 
-    # Resolve host filter
+    # Resolve host filter and live discovery args
     host_filter = _resolve_host_filter(cluster_name, hosts, hosts_file)
+    live_hosts, ssh_kwargs = _resolve_live_discovery_args(
+        cluster_name, hosts, hosts_file, host_filter,
+    )
 
     # Discover endpoints
     click.echo("Discovering inference endpoints...")
-    endpoints = discover_endpoints(host_filter=host_filter)
+    endpoints = discover_endpoints(
+        host_filter=host_filter,
+        host_list=live_hosts,
+        ssh_kwargs=ssh_kwargs,
+    )
 
     healthy = [ep for ep in endpoints if ep.healthy]
     if not healthy:
@@ -92,13 +99,13 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
         click.echo("  %s:%d — %s (%s)" % (ep.host, ep.port, models_str, ep.runtime))
 
     # Generate config
-    aliases = proxy_cfg.aliases
-    config_dict = build_litellm_config(healthy, aliases, effective_key)
+    config_dict = build_litellm_config(healthy, effective_key)
 
     if dry_run:
         click.echo("")
         click.echo("[dry-run] Would write litellm config and start proxy on %s:%d"
                    % (effective_host, effective_port))
+        aliases = proxy_cfg.aliases
         if aliases:
             click.echo("[dry-run] Aliases: %s" % aliases)
         return
@@ -113,8 +120,24 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
         master_key=effective_key,
     )
 
+    # Resolve auto-discover settings
+    auto_discover = not no_auto_discover and proxy_cfg.auto_discover
+    effective_interval = discover_interval or proxy_cfg.discover_interval
+
+    ad_kwargs = None
+    if auto_discover:
+        ad_kwargs = {
+            "interval": effective_interval,
+            "host_list": live_hosts,
+            "ssh_kwargs": ssh_kwargs,
+        }
+
     click.echo("Starting proxy on %s:%d..." % (effective_host, effective_port))
-    rc = engine.start(config_path=config_path, foreground=foreground)
+    rc = engine.start(
+        config_path=config_path,
+        foreground=foreground,
+        autodiscover_kwargs=ad_kwargs,
+    )
     if rc != 0:
         click.echo("Error: proxy failed to start (exit code %d)" % rc, err=True)
         sys.exit(rc)
@@ -123,7 +146,17 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
         click.echo("Proxy started. API: http://localhost:%d/v1" % effective_port)
         if effective_key:
             click.echo("Management API key: %s" % effective_key)
-        # click.echo("Log: %s" % (engine.state_dir / "litellm.log"))
+        if auto_discover:
+            click.echo("Auto-discover enabled (every %ds)" % effective_interval)
+
+        # Apply configured aliases via management API
+        aliases = proxy_cfg.aliases
+        if aliases:
+            import time
+            time.sleep(1)  # Brief delay for proxy readiness
+            added, _removed = engine.sync_aliases(aliases)
+            if added:
+                click.echo("Applied %d alias(es)." % added)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +208,15 @@ def status():
     click.echo("  Port:   %s" % state.get("port", "?"))
     click.echo("  Start:  %s" % state.get("started_at", "?"))
 
+    ad_pid = state.get("autodiscover_pid")
+    if ad_pid:
+        import os
+        try:
+            os.kill(int(ad_pid), 0)
+            click.echo("  Auto-discover: running (PID %s)" % ad_pid)
+        except (ProcessLookupError, PermissionError, ValueError):
+            click.echo("  Auto-discover: stopped (stale PID %s)" % ad_pid)
+
     if running:
         models = engine.list_models_via_api()
         if models:
@@ -191,57 +233,65 @@ def status():
             click.echo("No models registered (or management API unavailable).")
 
 
-# ---------------------------------------------------------------------------
-# proxy discover
-# ---------------------------------------------------------------------------
-
-@proxy.command()
-@host_options
-@click.option("--no-health-check", is_flag=True, help="Skip health checks")
-def discover(hosts, hosts_file, cluster_name, no_health_check):
-    """One-shot endpoint discovery (debug/inspection).
-
-    Scans job metadata and optionally health-checks each endpoint.
-    Does not start the proxy.
-
-    Examples:
-
-      sparkrun proxy discover
-
-      sparkrun proxy discover --cluster mylab
-
-      sparkrun proxy discover --no-health-check
-    """
-    from sparkrun.proxy.discovery import discover_endpoints
-
-    host_filter = _resolve_host_filter(cluster_name, hosts, hosts_file)
-
-    endpoints = discover_endpoints(
-        host_filter=host_filter,
-        check_health=not no_health_check,
-    )
-
-    if not endpoints:
-        click.echo("No inference endpoints found in job metadata.")
-        return
-
-    click.echo("Discovered %d endpoint(s):" % len(endpoints))
-    click.echo("")
-    for ep in endpoints:
-        health = "healthy" if ep.healthy else "unreachable"
-        if no_health_check:
-            health = "unchecked"
-        models_str = ", ".join(ep.actual_models) if ep.actual_models else ep.model
-        click.echo("  %-20s %s:%d" % (ep.cluster_id, ep.host, ep.port))
-        click.echo("    Recipe:   %s" % ep.recipe_name)
-        click.echo("    Model:    %s" % models_str)
-        click.echo("    Runtime:  %s" % ep.runtime)
-        click.echo("    TP:       %d" % ep.tensor_parallel)
-        click.echo("    Status:   %s" % health)
-        if ep.served_model_name:
-            click.echo("    Served:   %s" % ep.served_model_name)
-        click.echo("")
-
+# NOTE: not deleting yet, but proxy discover as a CLI command serves no purpose...
+# # ---------------------------------------------------------------------------
+# # proxy discover
+# # ---------------------------------------------------------------------------
+#
+# @proxy.command()
+# @host_options
+# @click.option("--no-health-check", is_flag=True, help="Skip health checks")
+# def discover(hosts, hosts_file, cluster_name, no_health_check):
+#     """One-shot endpoint discovery (debug/inspection).
+#
+#     Queries running containers on cluster hosts and health-checks each
+#     endpoint.  Does not start the proxy.
+#
+#     Examples:
+#
+#       sparkrun proxy discover
+#
+#       sparkrun proxy discover --cluster mylab
+#
+#       sparkrun proxy discover --no-health-check
+#     """
+#     from sparkrun.proxy.discovery import discover_endpoints
+#
+#     host_filter = _resolve_host_filter(cluster_name, hosts, hosts_file)
+#
+#     # Resolve hosts and SSH config for live discovery
+#     live_hosts, ssh_kwargs = _resolve_live_discovery_args(
+#         cluster_name, hosts, hosts_file, host_filter,
+#     )
+#
+#     endpoints = discover_endpoints(
+#         host_filter=host_filter,
+#         check_health=not no_health_check,
+#         host_list=live_hosts,
+#         ssh_kwargs=ssh_kwargs,
+#     )
+#
+#     if not endpoints:
+#         click.echo("No inference endpoints found in job metadata.")
+#         return
+#
+#     click.echo("Discovered %d endpoint(s):" % len(endpoints))
+#     click.echo("")
+#     for ep in endpoints:
+#         health = "healthy" if ep.healthy else "unreachable"
+#         if no_health_check:
+#             health = "unchecked"
+#         models_str = ", ".join(ep.actual_models) if ep.actual_models else ep.model
+#         click.echo("  %-20s %s:%d" % (ep.cluster_id, ep.host, ep.port))
+#         click.echo("    Recipe:   %s" % ep.recipe_name)
+#         click.echo("    Model:    %s" % models_str)
+#         click.echo("    Runtime:  %s" % ep.runtime)
+#         click.echo("    TP:       %d" % ep.tensor_parallel)
+#         click.echo("    Status:   %s" % health)
+#         if ep.served_model_name:
+#             click.echo("    Served:   %s" % ep.served_model_name)
+#         click.echo("")
+#
 
 # ---------------------------------------------------------------------------
 # proxy models
@@ -322,18 +372,15 @@ def alias_add(alias_name, target_model):
     proxy_cfg.save()
     click.echo("Alias added: %s -> %s" % (alias_name, target_model))
 
-    # Reload proxy if running
+    # Apply to running proxy via management API (no restart)
     engine = ProxyEngine()
     if engine.is_running():
-        click.echo("Reloading proxy to apply alias...")
-        from sparkrun.proxy.discovery import discover_endpoints
-        endpoints = discover_endpoints()
-        healthy = [ep for ep in endpoints if ep.healthy]
-        rc = engine.reload(healthy, proxy_cfg.aliases)
-        if rc == 0:
-            click.echo("Proxy reloaded.")
+        if engine.add_alias_via_api(alias_name, target_model):
+            click.echo("Alias applied to running proxy.")
         else:
-            click.echo("Warning: proxy reload failed (exit code %d)" % rc, err=True)
+            click.echo("Warning: could not apply alias — target model '%s' not found in proxy."
+                       % target_model, err=True)
+            click.echo("The alias is saved and will apply when the target model is loaded.")
 
 
 @alias.command("remove")
@@ -356,18 +403,14 @@ def alias_remove(alias_name):
     proxy_cfg.save()
     click.echo("Alias removed: %s" % alias_name)
 
-    # Reload proxy if running
+    # Remove from running proxy via management API (no restart)
     engine = ProxyEngine()
     if engine.is_running():
-        click.echo("Reloading proxy to apply changes...")
-        from sparkrun.proxy.discovery import discover_endpoints
-        endpoints = discover_endpoints()
-        healthy = [ep for ep in endpoints if ep.healthy]
-        rc = engine.reload(healthy, proxy_cfg.aliases)
-        if rc == 0:
-            click.echo("Proxy reloaded.")
+        removed = engine.remove_alias_via_api(alias_name)
+        if removed:
+            click.echo("Removed %d alias entry/entries from running proxy." % removed)
         else:
-            click.echo("Warning: proxy reload failed (exit code %d)" % rc, err=True)
+            click.echo("Alias was not active in the running proxy.")
 
 
 @alias.command("list")
@@ -516,10 +559,7 @@ def load_cmd(recipe_name, hosts, hosts_file, cluster_name,
             time.sleep(2)  # Brief delay for server startup
             endpoints = discover_endpoints()
             healthy = [ep for ep in endpoints if ep.healthy]
-            added = 0
-            for ep in healthy:
-                if engine.add_model_via_api(ep):
-                    added += 1
+            added, removed = engine.sync_models(healthy)
             if added:
                 click.echo("Registered %d model(s) with proxy." % added)
 
@@ -535,21 +575,11 @@ def unload_cmd(recipe_name, hosts, hosts_file, cluster_name, dry_run):
 
       sparkrun proxy unload qwen3-1.7b-vllm --cluster mylab
     """
-    from sparkrun.proxy.loader import unload_model
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.cli._stop_logs import _stop_recipe
 
-    ok = unload_model(
-        recipe_name=recipe_name,
-        cluster=cluster_name,
-        hosts=hosts,
-        hosts_file=hosts_file,
-        dry_run=dry_run,
-    )
-
-    if not ok:
-        click.echo("Error: failed to unload model.", err=True)
-        sys.exit(1)
-
-    click.echo("Model unloaded: %s" % recipe_name)
+    config = SparkrunConfig()
+    _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_override=None, dry_run=dry_run)
 
     if not dry_run:
         # Sync proxy to remove the now-stale model entry
@@ -568,6 +598,44 @@ def unload_cmd(recipe_name, hosts, hosts_file, cluster_name, dry_run):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _resolve_live_discovery_args(
+        cluster_name: str | None,
+        hosts: str | None,
+        hosts_file: str | None,
+        host_filter: list[str] | None,
+) -> tuple[list[str] | None, dict | None]:
+    """Resolve host list and SSH kwargs for live container discovery.
+
+    Tries explicit CLI args first, then falls back to config defaults.
+    Returns ``(None, None)`` when no hosts can be resolved (caller
+    should fall back to metadata-only discovery).
+    """
+    try:
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        config = SparkrunConfig()
+
+        live_hosts = host_filter
+        if not live_hosts:
+            live_hosts = config.default_hosts or None
+
+        if not live_hosts:
+            return None, None
+
+        # Apply cluster SSH user if applicable
+        if cluster_name:
+            from sparkrun.cli._common import _get_cluster_manager, _resolve_cluster_user
+            cluster_mgr = _get_cluster_manager()
+            cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
+            if cluster_user:
+                config.ssh_user = cluster_user
+
+        return live_hosts, build_ssh_kwargs(config)
+    except Exception:
+        return None, None
+
 
 def _resolve_host_filter(
         cluster_name: str | None,
@@ -606,6 +674,3 @@ def _resolve_host_filter(
             return None
 
     return None
-
-
-

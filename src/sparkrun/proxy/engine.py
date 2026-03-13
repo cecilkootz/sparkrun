@@ -12,6 +12,7 @@ import os
 import signal
 import shutil
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -27,14 +28,12 @@ logger = logging.getLogger(__name__)
 
 def build_litellm_config(
     endpoints: list[DiscoveredEndpoint],
-    aliases: dict[str, str] | None = None,
     master_key: str | None = DEFAULT_MASTER_KEY,
 ) -> dict[str, Any]:
     """Generate a litellm proxy config dict from discovered endpoints.
 
     Args:
         endpoints: Discovered inference endpoints.
-        aliases: Alias -> model group name mapping.
         master_key: Master key for litellm management API.  When None,
             no authentication is required (avoids LiteLLM DB dependency).
 
@@ -81,12 +80,6 @@ def build_litellm_config(
     if general_settings:
         config["general_settings"] = general_settings
 
-    # Add model group aliases
-    if aliases:
-        config["router_settings"] = {
-            "model_group_alias": dict(aliases),
-        }
-
     return config
 
 
@@ -132,8 +125,15 @@ class ProxyEngine:
         self.state_dir = state_dir
         self.state_file = state_dir / "state.yaml"
         self.config_path = state_dir / "litellm_config.yaml"
+        self._autodiscover_config_path = state_dir / "autodiscover.yaml"
 
-    def start(self, config_path: Path | None = None, foreground: bool = False, dry_run: bool = False) -> int:
+    def start(
+        self,
+        config_path: Path | None = None,
+        foreground: bool = False,
+        dry_run: bool = False,
+        autodiscover_kwargs: dict | None = None,
+    ) -> int:
         """Launch the LiteLLM proxy server via uvx.
 
         Uses ``uvx --from 'litellm[proxy]' litellm`` to run the
@@ -146,6 +146,9 @@ class ProxyEngine:
             config_path: Path to litellm config YAML.
             foreground: Run in foreground (blocking).
             dry_run: Print command without executing.
+            autodiscover_kwargs: When set, start a background auto-discover
+                process after the proxy launches.  Keys: ``interval``,
+                ``host_list``, ``ssh_kwargs``, ``cache_dir``.
 
         Returns:
             0 on success, non-zero on failure.
@@ -185,11 +188,22 @@ class ProxyEngine:
             env["DATABASE_URL"] = "sqlite:///%s" % db_path
 
         if foreground:
+            proc = subprocess.Popen(cmd, env=env)
+            self._save_state(proc.pid)
+            if autodiscover_kwargs:
+                ad_pid = self.start_autodiscover(
+                    proxy_pid=proc.pid, **autodiscover_kwargs,
+                )
+                if ad_pid:
+                    self.update_autodiscover_pid(ad_pid)
             try:
-                proc = subprocess.run(cmd, env=env)
-                return proc.returncode
+                return proc.wait()
             except KeyboardInterrupt:
+                proc.terminate()
                 return 130
+            finally:
+                self.stop_autodiscover()
+                self._clear_state()
         else:
             # Redirect output to log file so startup errors are visible
             log_path = self.state_dir / "litellm.log"
@@ -220,12 +234,89 @@ class ProxyEngine:
                 return poll or 1
 
             self._save_state(proc.pid)
+
+            if autodiscover_kwargs:
+                ad_pid = self.start_autodiscover(
+                    proxy_pid=proc.pid, **autodiscover_kwargs,
+                )
+                if ad_pid:
+                    self.update_autodiscover_pid(ad_pid)
+
             logger.info("Proxy started (PID %d) on %s:%d", proc.pid, self.host, self.port)
             logger.info("Log: %s", log_path)
             return 0
 
+    def start_autodiscover(
+        self,
+        proxy_pid: int,
+        interval: int = 30,
+        host_list: list[str] | None = None,
+        ssh_kwargs: dict | None = None,
+        cache_dir: str | None = None,
+    ) -> int | None:
+        """Spawn the background auto-discovery process.
+
+        Writes a config file and launches
+        ``python -m sparkrun.proxy.autodiscover`` as a detached subprocess.
+
+        Returns:
+            PID of the auto-discover process, or None on failure.
+        """
+        cfg = {
+            "proxy_pid": proxy_pid,
+            "proxy_port": self.port,
+            "master_key": self.master_key,
+            "interval": interval,
+        }
+        if host_list:
+            cfg["host_list"] = host_list
+        if ssh_kwargs is not None:
+            cfg["ssh_kwargs"] = ssh_kwargs
+        if cache_dir:
+            cfg["cache_dir"] = cache_dir
+
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with open(self._autodiscover_config_path, "w") as f:
+            yaml.safe_dump(cfg, f, default_flow_style=False)
+
+        log_path = self.state_dir / "autodiscover.log"
+        log_file = open(log_path, "w")
+
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "sparkrun.proxy.autodiscover",
+                 str(self._autodiscover_config_path)],
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            logger.info(
+                "Auto-discover started (PID %d), interval=%ds, log=%s",
+                proc.pid, interval, log_path,
+            )
+            return proc.pid
+        except Exception:
+            log_file.close()
+            logger.warning("Failed to start auto-discover process", exc_info=True)
+            return None
+
+    def stop_autodiscover(self) -> None:
+        """Stop the background auto-discovery process if running."""
+        ad_pid = self._read_autodiscover_pid()
+        if ad_pid is None:
+            return
+        try:
+            os.kill(ad_pid, signal.SIGTERM)
+            logger.info("Sent SIGTERM to auto-discover PID %d", ad_pid)
+        except ProcessLookupError:
+            logger.debug("Auto-discover PID %d already gone", ad_pid)
+        except PermissionError:
+            logger.warning("Permission denied stopping auto-discover PID %d", ad_pid)
+        # Clean up config file
+        self._autodiscover_config_path.unlink(missing_ok=True)
+
     def stop(self, dry_run: bool = False) -> bool:
-        """Stop the running proxy (SIGTERM via PID).
+        """Stop the running proxy and auto-discover (SIGTERM via PID).
 
         Returns:
             True if a process was stopped.
@@ -238,6 +329,10 @@ class ProxyEngine:
         if dry_run:
             logger.info("[dry-run] Would send SIGTERM to PID %d", pid)
             return True
+
+        # Stop auto-discover first (it monitors proxy PID anyway,
+        # but explicit stop is cleaner)
+        self.stop_autodiscover()
 
         try:
             os.kill(pid, signal.SIGTERM)
@@ -262,26 +357,6 @@ class ProxyEngine:
             return True
         except (ProcessLookupError, PermissionError):
             return False
-
-    def reload(
-        self,
-        endpoints: list[DiscoveredEndpoint],
-        aliases: dict[str, str] | None = None,
-        dry_run: bool = False,
-    ) -> int:
-        """Regenerate config and restart the proxy.
-
-        Used for alias changes and model removals that require a restart.
-
-        Returns:
-            0 on success, non-zero on failure.
-        """
-        config_dict = build_litellm_config(endpoints, aliases, self.master_key)
-        if not dry_run:
-            write_config(config_dict, self.config_path)
-
-        self.stop(dry_run=dry_run)
-        return self.start(config_path=self.config_path, dry_run=dry_run)
 
     # -- Management API client --
 
@@ -404,6 +479,128 @@ class ProxyEngine:
 
         return added, removed
 
+    def add_alias_via_api(self, alias_name: str, target_model: str) -> bool:
+        """Add an alias by registering it as a model pointing to the same backend(s).
+
+        Finds all registered backends for *target_model* and adds
+        *alias_name* entries pointing to the same backends via the
+        management API.  No proxy restart required.
+
+        Returns:
+            True if at least one alias entry was added.
+        """
+        registered = self.list_models_via_api()
+        backends = [
+            m.get("litellm_params", {})
+            for m in registered
+            if m.get("model_name") == target_model
+        ]
+
+        if not backends:
+            logger.warning(
+                "Cannot add alias %r: target model %r not found in proxy",
+                alias_name, target_model,
+            )
+            return False
+
+        success = False
+        for params in backends:
+            api_base = params.get("api_base", "")
+            payload = {
+                "model_name": alias_name,
+                "litellm_params": {
+                    "model": "openai/%s" % target_model,
+                    "api_base": api_base,
+                    "api_key": "not-needed",
+                },
+            }
+            try:
+                self._api_request("POST", "/model/new", payload)
+                success = True
+            except Exception:
+                logger.debug(
+                    "Failed to add alias %s via management API",
+                    alias_name, exc_info=True,
+                )
+
+        return success
+
+    def remove_alias_via_api(self, alias_name: str) -> int:
+        """Remove all model entries matching *alias_name* from the proxy.
+
+        Returns:
+            Number of entries removed.
+        """
+        registered = self.list_models_via_api()
+        removed = 0
+        for m in registered:
+            if m.get("model_name") == alias_name:
+                model_id = m.get("model_info", {}).get("id")
+                if model_id and self.remove_model_via_api(model_id):
+                    removed += 1
+        return removed
+
+    def sync_aliases(self, aliases: dict[str, str]) -> tuple[int, int]:
+        """Ensure all configured aliases are registered with the proxy.
+
+        Adds missing alias entries and removes alias entries whose
+        alias name is no longer in the configuration.
+
+        Args:
+            aliases: Alias name -> target model name mapping.
+
+        Returns:
+            Tuple of (added_count, removed_count).
+        """
+        registered = self.list_models_via_api()
+
+        # Build lookup: model_name -> list of litellm_params
+        registered_by_name: dict[str, list[dict]] = {}
+        for m in registered:
+            name = m.get("model_name", "")
+            registered_by_name.setdefault(name, []).append(m)
+
+        added = 0
+        removed = 0
+
+        # Add missing aliases
+        for alias_name, target_model in aliases.items():
+            if alias_name in registered_by_name:
+                continue  # Already registered
+            if self.add_alias_via_api(alias_name, target_model):
+                added += 1
+
+        # Remove stale aliases: entries that were previously added as
+        # aliases but are no longer in the alias config.  We identify
+        # these as model entries whose model_name is NOT a real served
+        # model (not a target of any alias) and NOT in the current
+        # alias config.
+        target_models = set(aliases.values())
+        real_model_names = set()
+        for m in registered:
+            # A "real" model has model_name matching the openai/ suffix
+            litellm_model = m.get("litellm_params", {}).get("model", "")
+            if litellm_model == "openai/%s" % m.get("model_name", ""):
+                real_model_names.add(m.get("model_name", ""))
+
+        for m in registered:
+            name = m.get("model_name", "")
+            if name in real_model_names:
+                continue  # Real model, not an alias
+            if name in aliases:
+                continue  # Still a configured alias
+            if name in target_models:
+                continue  # It's a target model name
+            # This looks like a stale alias — but only remove if the
+            # model param doesn't match its name (i.e. it was an alias)
+            litellm_model = m.get("litellm_params", {}).get("model", "")
+            if litellm_model != "openai/%s" % name:
+                model_id = m.get("model_info", {}).get("id")
+                if model_id and self.remove_model_via_api(model_id):
+                    removed += 1
+
+        return added, removed
+
     def _api_request(self, method: str, path: str, payload: dict | None = None) -> dict:
         """Make an HTTP request to the litellm management API."""
         url = "http://localhost:%d%s" % (self.port, path)
@@ -421,7 +618,7 @@ class ProxyEngine:
 
     # -- State management --
 
-    def _save_state(self, pid: int) -> None:
+    def _save_state(self, pid: int, autodiscover_pid: int | None = None) -> None:
         """Save proxy state to disk."""
         import datetime
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -432,6 +629,8 @@ class ProxyEngine:
             "master_key": self.master_key,
             "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
+        if autodiscover_pid is not None:
+            state["autodiscover_pid"] = autodiscover_pid
         with open(self.state_file, "w") as f:
             yaml.safe_dump(state, f, default_flow_style=False)
 
@@ -445,6 +644,19 @@ class ProxyEngine:
             return int(state["pid"]) if state and "pid" in state else None
         except Exception:
             return None
+
+    def _read_autodiscover_pid(self) -> int | None:
+        """Read auto-discover PID from state file."""
+        state = self.get_state()
+        if state and "autodiscover_pid" in state:
+            return int(state["autodiscover_pid"])
+        return None
+
+    def update_autodiscover_pid(self, autodiscover_pid: int) -> None:
+        """Record the auto-discover PID in state (call after start)."""
+        pid = self._read_pid()
+        if pid is not None:
+            self._save_state(pid, autodiscover_pid=autodiscover_pid)
 
     def _clear_state(self) -> None:
         """Remove state file."""

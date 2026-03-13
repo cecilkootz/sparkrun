@@ -158,7 +158,6 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
         cleanup_containers(host_list, container_names, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
     click.echo("Workload stopped on %d host(s)." % len(host_list))
-    sys.exit(0)
 
 
 @click.command("logs")
