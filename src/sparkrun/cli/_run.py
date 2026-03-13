@@ -9,7 +9,6 @@ import click
 
 from ._common import (
     RECIPE_NAME,
-    _apply_node_trimming,
     _apply_recipe_overrides,
     _display_vram_estimate,
     _expand_recipe_shortcut,
@@ -40,7 +39,6 @@ logger = logging.getLogger(__name__)
 @click.option("--init-port", type=int, default=25000, help="vllm/SGLang distributed init port")
 @click.option("--dashboard", is_flag=True, help="Enable Ray dashboard on head node")
 @click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port")
-# @click.option("--setup", is_flag=True, hidden=True, help="Deprecated: distribution is now automatic")
 @dry_run_option
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
@@ -48,7 +46,6 @@ logger = logging.getLogger(__name__)
 @click.option("--transfer-mode", default=None,
               type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
               help="Resource transfer mode (overrides cluster setting)")
-# @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -74,8 +71,10 @@ def run(
 
       sparkrun run my-recipe.yaml -o attention_backend=triton -o max_model_len=4096
     """
+    from sparkrun.cli._common import _apply_node_trimming
     from sparkrun.core.bootstrap import init_sparkrun, get_runtime
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.launcher import launch_inference
 
     v = init_sparkrun()
     # SAF's init_framework_desktop reconfigures the root logger — re-apply ours
@@ -83,7 +82,7 @@ def run(
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     # Find and load recipe
-    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name)
 
     # If recipe was loaded from a URL, simplify for display
     _resolved_name = _expand_recipe_shortcut(recipe_name)
@@ -93,9 +92,9 @@ def run(
     issues = recipe.validate()
     if issues:
         for issue in issues:
-            click.echo(f"Warning: {issue}", err=True)
+            click.echo("Warning: %s" % issue, err=True)
 
-    # Build overrides from recipe_override_options + dedicated CLI params
+    # Build overrides
     overrides = _apply_recipe_overrides(
         options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
         gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
@@ -109,13 +108,13 @@ def run(
     try:
         runtime = get_runtime(recipe.runtime, v)
     except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
+        click.echo("Error: %s" % e, err=True)
         sys.exit(1)
 
     # Runtime-specific validation
     runtime_issues = runtime.validate_recipe(recipe)
     for issue in runtime_issues:
-        click.echo(f"Warning: {issue}", err=True)
+        click.echo("Warning: %s" % issue, err=True)
 
     # Determine hosts
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
@@ -124,22 +123,19 @@ def run(
     if hosts:
         host_source = "--hosts"
     elif hosts_file:
-        host_source = f"hosts file ({hosts_file})"
+        host_source = "hosts file (%s)" % hosts_file
     elif cluster_name:
-        host_source = f"cluster '{cluster_name}'"
+        host_source = "cluster '%s'" % cluster_name
     else:
         default_name = cluster_mgr.get_default() if cluster_mgr else None
         if default_name:
-            host_source = f"default cluster '{default_name}'"
+            host_source = "default cluster '%s'" % default_name
         elif config.default_hosts:
             host_source = "config defaults"
         else:
             host_source = "localhost"
 
-    # Validate required nodes vs host count.
-    # On DGX Spark each host has 1 GPU, so parallelism maps to node count.
-    # The runtime computes the required count from all parallelism dimensions
-    # (e.g. tp * pp for SGLang).
+    # Node count validation / trimming
     if len(host_list) > 1 and not solo:
         try:
             required = runtime.compute_required_nodes(recipe, overrides)
@@ -164,12 +160,8 @@ def run(
                     % (required, required, original_count)
                 )
 
-    # Enforce max_nodes: trim host list if recipe caps node count.
-    # Must happen before cluster_id derivation so stop/logs match.
+    # Enforce max_nodes
     if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
-        # Check for conflict: if the runtime requires more nodes than
-        # the recipe allows, that's a hard error — the user explicitly
-        # requested parallelism that exceeds the recipe's max_nodes.
         try:
             required = runtime.compute_required_nodes(recipe, overrides)
         except ValueError:
@@ -199,197 +191,69 @@ def run(
         click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
         host_list = host_list[:1]
 
-    # Derive deterministic cluster_id from recipe + (trimmed) hosts
-    from sparkrun.orchestration.job_metadata import generate_cluster_id, save_job_metadata
-    cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
-
-    # Cache job metadata for later lookup by cluster status
-    if not dry_run:
-        try:
-            save_job_metadata(cluster_id, recipe, host_list,
-                              overrides=overrides, cache_dir=str(config.cache_dir),
-                              recipe_ref=recipe_ref)
-        except Exception:
-            logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
-
-    # Resolve container image
-    container_image = runtime.resolve_container(recipe, overrides)
-
-    # Resolve transfer mode early — the builder needs it for delegated builds.
-    # CLI --transfer-mode > cluster setting > "auto"
+    # Resolve cache dir and transfer mode
     cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
     effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
     cluster_transfer_mode = _resolve_transfer_mode(cluster_name, hosts, hosts_file, cluster_mgr)
     effective_transfer_mode = transfer_mode or cluster_transfer_mode or "auto"
 
-    # Builder phase: resolve and run builder plugin before distribution.
-    # The builder ensures the container image is available locally (or on
-    # the head node when transfer_mode is "delegated").
-    # For recipes with an explicit builder field, use that builder.
-    # For eugr-vllm runtime, runtime.prepare() delegates to EugrBuilder.
-    # For all other runtimes without a builder field, docker-pull is a no-op.
-    if recipe.builder:
-        from sparkrun.core.bootstrap import get_builder
-        from sparkrun.orchestration.primitives import build_ssh_kwargs as _build_ssh_kw
-        try:
-            builder = get_builder(recipe.builder, v)
-            container_image = builder.prepare_image(
-                container_image, recipe, host_list, config=config, dry_run=dry_run,
-                transfer_mode=effective_transfer_mode,
-                ssh_kwargs=_build_ssh_kw(config),
-            )
-        except ValueError:
-            click.echo("Warning: builder '%s' not found, skipping" % recipe.builder, err=True)
-
-    # Pre-launch preparation (e.g., eugr container builds via legacy runtime path)
-    runtime.prepare(
-        recipe, host_list, config=config, dry_run=dry_run,
-        transfer_mode=effective_transfer_mode,
-    )
-
-    # Distribution phase: ensure image/model locally, distribute to hosts,
-    # detect IB for NCCL env + fast transfer routing.
-    # Always runs for non-delegating runtimes (hash checks make it cheap
-    # when resources are already present on all hosts).
-    nccl_env = None
-    ib_ip_map: dict[str, str] = {}
-    if not runtime.is_delegating_runtime():
-        from sparkrun.orchestration.distribution import distribute_resources
-        nccl_env, ib_ip_map, mgmt_ip_map = distribute_resources(
-            container_image, recipe.model, host_list,
-            effective_cache_dir,
-            config, dry_run,
-            model_revision=recipe.model_revision,
-            recipe_name=recipe.name,
-            transfer_mode=effective_transfer_mode,
-        )
-        # Re-save job metadata with IP maps from IB detection
-        if not dry_run and (ib_ip_map or mgmt_ip_map):
-            try:
-                save_job_metadata(cluster_id, recipe, host_list,
-                                  overrides=overrides, cache_dir=str(config.cache_dir),
-                                  ib_ip_map=ib_ip_map, mgmt_ip_map=mgmt_ip_map,
-                                  recipe_ref=recipe_ref)
-            except Exception:
-                logger.debug("Failed to update job metadata: %s", cluster_id, exc_info=True)
-
-    # Sync registry tuning configs (after distribution, before launch)
-    if not no_sync_tuning:
-        if not dry_run:
-            from sparkrun.tuning.sync import sync_registry_tuning
-            try:
-                synced = sync_registry_tuning(
-                    _registry_mgr, recipe.runtime, dry_run=dry_run,
-                    registry_name=recipe.source_registry,
-                )
-                if synced:
-                    click.echo("Synced %d tuning config(s) from registries." % synced)
-            except Exception:
-                logger.debug("Failed to sync tuning configs", exc_info=True)
-
-        # Distribute tuning configs to remote hosts (after registry sync, before launch)
-        if not runtime.is_delegating_runtime():
-            from sparkrun.tuning.distribute import distribute_tuning_to_hosts
-            from sparkrun.orchestration.primitives import build_ssh_kwargs
-            try:
-                tuning_failed = distribute_tuning_to_hosts(
-                    recipe.runtime, host_list,
-                    dry_run=dry_run,
-                    transfer_mode=effective_transfer_mode,
-                    **build_ssh_kwargs(config),
-                )
-                if tuning_failed:
-                    click.echo(
-                        "Warning: Tuning config distribution failed on: %s"
-                        % ", ".join(tuning_failed), err=True,
-                    )
-            except Exception:
-                logger.debug("Failed to distribute tuning configs", exc_info=True)
-
-    # For GGUF models that were pre-synced, resolve the container-internal
-    # cache path and inject it as the ``model`` override so the recipe
-    # command template renders ``{model}`` with the local path instead
-    # of the HF repo spec (which would re-download at serve time).
-    from sparkrun.models.download import is_gguf_model, resolve_gguf_container_path
-    if is_gguf_model(recipe.model) and not dry_run:
-        gguf_container_path = resolve_gguf_container_path(
-            recipe.model, effective_cache_dir,
-        )
-        if gguf_container_path:
-            overrides["_gguf_model_path"] = gguf_container_path
-            overrides["model"] = gguf_container_path
-            logger.info("GGUF model pre-synced, container path: %s", gguf_container_path)
-
-    # Generate serve command for display
-    serve_command = runtime.generate_command(
-        recipe=recipe,
-        overrides=overrides,
-        is_cluster=not is_solo,
-        num_nodes=len(host_list),
-        head_ip=None,  # determined during launch
-    )
-
-    # Display summary
-    click.echo(f"Runtime:   {runtime.runtime_name}")
-    click.echo(f"Image:     {container_image}")
-    click.echo(f"Model:     {recipe.model}")
-    click.echo(f"Cluster:   {cluster_id}")
+    # Display summary before launch
+    container_image = runtime.resolve_container(recipe, overrides)
+    click.echo("Runtime:   %s" % runtime.runtime_name)
+    click.echo("Image:     %s" % container_image)
+    click.echo("Model:     %s" % recipe.model)
     if is_solo:
         click.echo("Mode:      solo")
     else:
-        click.echo(f"Mode:      cluster ({len(host_list)} nodes)")
+        click.echo("Mode:      cluster (%d nodes)" % len(host_list))
     if effective_transfer_mode not in ("auto", "local"):
-        click.echo(f"Transfer:  {effective_transfer_mode}")
+        click.echo("Transfer:  %s" % effective_transfer_mode)
 
     _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=effective_cache_dir)
 
     click.echo()
-    click.echo(f"Hosts:     {host_source}")
+    click.echo("Hosts:     %s" % host_source)
     if is_solo:
         target = host_list[0] if host_list else "localhost"
-        click.echo(f"  Target:  {target}")
+        click.echo("  Target:  %s" % target)
     else:
-        click.echo(f"  Head:    {host_list[0]}")
+        click.echo("  Head:    %s" % host_list[0])
         if len(host_list) > 1:
-            click.echo(f"  Workers: {', '.join(host_list[1:])}")
-
-    click.echo()
-    click.echo("Serve command:")
-    for line in serve_command.strip().splitlines():
-        click.echo(f"  {line}")
+            click.echo("  Workers: %s" % ", ".join(host_list[1:]))
     click.echo()
 
-    # Best-effort page cache clear before container launch
-    if not runtime.is_delegating_runtime():
-        from sparkrun.orchestration.primitives import try_clear_page_cache, build_ssh_kwargs
-        try_clear_page_cache(host_list, ssh_kwargs=build_ssh_kwargs(config), dry_run=dry_run)
-
-    # Launch — the runtime controls solo vs cluster orchestration.
-    # If distribution pre-detected IB, pass nccl_env through to avoid
-    # redundant detection inside the runtime.
-    rc = runtime.run(
-        hosts=host_list,
-        image=container_image,
-        serve_command=serve_command,
+    # Launch via shared pipeline
+    result = launch_inference(
         recipe=recipe,
+        runtime=runtime,
+        host_list=host_list,
         overrides=overrides,
-        cluster_id=cluster_id,
-        env=recipe.env,
-        cache_dir=effective_cache_dir,
         config=config,
+        v=v,
+        is_solo=is_solo,
+        cache_dir=effective_cache_dir,
+        transfer_mode=effective_transfer_mode,
+        recipe_ref=recipe_ref,
+        registry_mgr=registry_mgr,
+        sync_tuning=not no_sync_tuning,
         dry_run=dry_run,
         detached=not foreground,
-        nccl_env=nccl_env,
-        ib_ip_map=ib_ip_map,
         ray_port=ray_port,
         dashboard_port=dashboard_port,
         dashboard=dashboard,
         init_port=init_port,
     )
 
+    click.echo("Cluster:   %s" % result.cluster_id)
+    click.echo()
+    click.echo("Serve command:")
+    for line in result.serve_command.strip().splitlines():
+        click.echo("  %s" % line)
+    click.echo()
+
     # Post-serve lifecycle: run post_exec and post_commands if recipe defines them
     has_post_hooks = bool(recipe.post_exec or recipe.post_commands)
-    if rc == 0 and has_post_hooks and not foreground:
+    if result.rc == 0 and has_post_hooks and not foreground:
         from sparkrun.orchestration.hooks import (
             build_hook_context,
             run_post_exec,
@@ -408,9 +272,9 @@ def run(
 
         # Determine head container name
         if is_solo:
-            head_container = generate_container_name(cluster_id, "solo")
+            head_container = generate_container_name(result.cluster_id, "solo")
         else:
-            head_container = generate_node_container_name(cluster_id, 0)
+            head_container = generate_node_container_name(result.cluster_id, 0)
 
         # Detect head IP for health checks
         from sparkrun.core.hosts import is_local_host
@@ -452,7 +316,7 @@ def run(
             head_host=head_host,
             head_ip=head_ip,
             port=effective_port,
-            cluster_id=cluster_id,
+            cluster_id=result.cluster_id,
             container_name=head_container,
             cache_dir=effective_cache_dir,
         )
@@ -479,19 +343,19 @@ def run(
             click.echo("Stopping workload (stop_after_post=true)...")
             runtime.stop(
                 hosts=host_list,
-                cluster_id=cluster_id,
+                cluster_id=result.cluster_id,
                 config=config,
                 dry_run=dry_run,
             )
             sys.exit(0)
 
     # Follow container logs after a successful detached launch
-    if rc == 0 and not foreground and not dry_run and not no_follow:
+    if result.rc == 0 and not foreground and not dry_run and not no_follow:
         runtime.follow_logs(
             hosts=host_list,
-            cluster_id=cluster_id,
+            cluster_id=result.cluster_id,
             config=config,
             dry_run=dry_run,
         )
 
-    sys.exit(rc)
+    sys.exit(result.rc)

@@ -1001,84 +1001,126 @@ class TestLoader:
 
 
 # =====================================================================
-# Tests: _resolve_available_port (proxy load port conflict avoidance)
+# Tests: launch_inference auto_port (port conflict avoidance)
 # =====================================================================
 
-class TestResolveAvailablePort:
-    """Test proxy load port auto-resolution via orchestration primitives."""
+class TestLaunchInferenceAutoPort:
+    """Test auto_port behavior in launch_inference (used by proxy load and benchmark)."""
 
-    def _patch_resolve(self, mock_recipe, fap_return=8000):
-        """Helper to set up patches for _resolve_available_port tests."""
-        return (
-            patch("sparkrun.core.bootstrap.init_sparkrun"),
-            patch("sparkrun.core.config.SparkrunConfig"),
-            patch("sparkrun.cli._common._load_recipe", return_value=(mock_recipe, None, None)),
-            patch("sparkrun.cli._common._resolve_hosts_or_exit",
-                  return_value=(["10.0.0.1"], None)),
-            patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
-            patch("sparkrun.orchestration.primitives.find_available_port",
-                  return_value=fap_return),
-        )
-
-    def test_uses_find_available_port(self):
-        """Calls orchestration find_available_port with recipe's desired port."""
-        from sparkrun.cli._proxy import _resolve_available_port
-
+    def _make_mocks(self):
+        """Create mock recipe, runtime, and config for launch_inference tests."""
         mock_recipe = MagicMock()
         mock_recipe.build_config_chain.return_value = {"port": 8000}
+        mock_recipe.model = "test/model"
+        mock_recipe.model_revision = None
+        mock_recipe.name = "test"
+        mock_recipe.env = {}
+        mock_recipe.builder = None
+        mock_recipe.mode = "solo"
+        mock_recipe.max_nodes = None
 
-        p1, p2, p3, p4, p5, p6 = self._patch_resolve(mock_recipe, 8000)
-        with p1, p2, p3, p4, p5, p6 as mock_fap:
-            port = _resolve_available_port("test-recipe", None, None, None, {}, False)
+        mock_runtime = MagicMock()
+        mock_runtime.resolve_container.return_value = "test:latest"
+        mock_runtime.is_delegating_runtime.return_value = True
+        mock_runtime.generate_command.return_value = "serve cmd"
+        mock_runtime.run.return_value = 0
 
-        assert port == 8000
-        mock_fap.assert_called_once_with("10.0.0.1", 8000, ssh_kwargs={}, dry_run=False)
+        mock_config = MagicMock()
+        mock_config.hf_cache_dir = "/tmp/cache"
+        mock_config.cache_dir = "/tmp/cache"
 
-    def test_increments_when_occupied(self):
+        return mock_recipe, mock_runtime, mock_config
+
+    def test_auto_port_calls_find_available_port(self):
+        """auto_port=True uses find_available_port to resolve the port."""
+        from sparkrun.core.launcher import launch_inference
+
+        mock_recipe, mock_runtime, mock_config = self._make_mocks()
+
+        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
+             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8000) as mock_fap, \
+             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
+             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+            result = launch_inference(
+                recipe=mock_recipe, runtime=mock_runtime,
+                host_list=["10.0.0.1"], overrides={}, config=mock_config,
+                is_solo=True, auto_port=True, dry_run=True,
+            )
+
+        assert result.serve_port == 8000
+        mock_fap.assert_called_once_with("10.0.0.1", 8000, ssh_kwargs={}, dry_run=True)
+
+    def test_auto_port_increments_when_occupied(self):
         """Returns incremented port when desired port is in use."""
-        from sparkrun.cli._proxy import _resolve_available_port
+        from sparkrun.core.launcher import launch_inference
 
-        mock_recipe = MagicMock()
-        mock_recipe.build_config_chain.return_value = {"port": 8000}
+        mock_recipe, mock_runtime, mock_config = self._make_mocks()
 
-        p1, p2, p3, p4, p5, p6 = self._patch_resolve(mock_recipe, 8002)
-        with p1, p2, p3, p4, p5, p6:
-            port = _resolve_available_port("test-recipe", None, None, None, {}, False)
+        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
+             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8002), \
+             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
+             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+            result = launch_inference(
+                recipe=mock_recipe, runtime=mock_runtime,
+                host_list=["10.0.0.1"], overrides={}, config=mock_config,
+                is_solo=True, auto_port=True, dry_run=True,
+            )
 
-        assert port == 8002
+        assert result.serve_port == 8002
 
-    def test_uses_recipe_default_port(self):
+    def test_auto_port_uses_recipe_default_port(self):
         """Reads desired port from recipe config chain."""
-        from sparkrun.cli._proxy import _resolve_available_port
+        from sparkrun.core.launcher import launch_inference
 
-        mock_recipe = MagicMock()
+        mock_recipe, mock_runtime, mock_config = self._make_mocks()
         mock_recipe.build_config_chain.return_value = {"port": 9000}
 
-        p1, p2, p3, p4, p5, p6 = self._patch_resolve(mock_recipe, 9000)
-        with p1, p2, p3, p4, p5, p6 as mock_fap:
-            port = _resolve_available_port("test-recipe", None, None, None, {}, False)
+        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
+             patch("sparkrun.orchestration.primitives.find_available_port", return_value=9000) as mock_fap, \
+             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
+             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+            result = launch_inference(
+                recipe=mock_recipe, runtime=mock_runtime,
+                host_list=["10.0.0.1"], overrides={}, config=mock_config,
+                is_solo=True, auto_port=True, dry_run=True,
+            )
 
-        assert port == 9000
-        mock_fap.assert_called_once_with("10.0.0.1", 9000, ssh_kwargs={}, dry_run=False)
+        assert result.serve_port == 9000
+        mock_fap.assert_called_once_with("10.0.0.1", 9000, ssh_kwargs={}, dry_run=True)
 
-    def test_raises_on_error(self):
-        """Raises when recipe loading or host resolution fails."""
-        from sparkrun.cli._proxy import _resolve_available_port
+    def test_no_auto_port_uses_config_chain(self):
+        """auto_port=False reads port from config chain without probing."""
+        from sparkrun.core.launcher import launch_inference
 
-        with patch("sparkrun.core.bootstrap.init_sparkrun", side_effect=RuntimeError("boom")):
-            with pytest.raises(RuntimeError, match="boom"):
-                _resolve_available_port("bad-recipe", None, None, None, {}, False)
+        mock_recipe, mock_runtime, mock_config = self._make_mocks()
+        mock_recipe.build_config_chain.return_value = {"port": 9000}
+
+        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
+             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
+             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+            result = launch_inference(
+                recipe=mock_recipe, runtime=mock_runtime,
+                host_list=["10.0.0.1"], overrides={}, config=mock_config,
+                is_solo=True, auto_port=False, dry_run=True,
+            )
+
+        assert result.serve_port == 9000
 
     def test_dry_run_passes_through(self):
         """dry_run flag is forwarded to find_available_port."""
-        from sparkrun.cli._proxy import _resolve_available_port
+        from sparkrun.core.launcher import launch_inference
 
-        mock_recipe = MagicMock()
-        mock_recipe.build_config_chain.return_value = {"port": 8000}
+        mock_recipe, mock_runtime, mock_config = self._make_mocks()
 
-        p1, p2, p3, p4, p5, p6 = self._patch_resolve(mock_recipe, 8000)
-        with p1, p2, p3, p4, p5, p6 as mock_fap:
-            _resolve_available_port("test-recipe", None, None, None, {}, True)
+        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
+             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8000) as mock_fap, \
+             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
+             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+            launch_inference(
+                recipe=mock_recipe, runtime=mock_runtime,
+                host_list=["10.0.0.1"], overrides={}, config=mock_config,
+                is_solo=True, auto_port=True, dry_run=True,
+            )
 
         mock_fap.assert_called_once_with("10.0.0.1", 8000, ssh_kwargs={}, dry_run=True)
 

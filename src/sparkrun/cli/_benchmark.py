@@ -105,10 +105,10 @@ def _run_benchmark(
     from sparkrun.core.bootstrap import init_sparkrun, get_runtime, get_benchmarking_framework
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.hosts import is_local_host
+    from sparkrun.core.launcher import launch_inference
     from sparkrun.orchestration.primitives import (
         build_ssh_kwargs,
         detect_host_ip,
-        find_available_port,
         wait_for_healthy,
         wait_for_port,
     )
@@ -120,7 +120,7 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 1. Load recipe
     # ---------------------------------------------------------------
-    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name)
 
     _resolved_name = _expand_recipe_shortcut(recipe_name)
     recipe_ref = _simplify_recipe_ref(_resolved_name) if _is_recipe_url(_resolved_name) else None
@@ -132,7 +132,6 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 2. Resolve benchmark configuration
     # ---------------------------------------------------------------
-    # Priority: --profile flag > recipe benchmark: block > framework defaults
     bench_spec = None
     bench_args: dict = {}
 
@@ -141,7 +140,7 @@ def _run_benchmark(
         from ..core.benchmark_profiles import ProfileAmbiguousError
         from ..core.benchmark_profiles import ProfileError
         try:
-            profile_path = find_benchmark_profile(profile, config, _registry_mgr)
+            profile_path = find_benchmark_profile(profile, config, registry_mgr)
         except (ProfileError, ProfileAmbiguousError) as e:
             click.echo("Error: %s" % e, err=True)
             sys.exit(1)
@@ -156,22 +155,16 @@ def _run_benchmark(
             if not framework_name and bench_spec.framework:
                 framework_name = bench_spec.framework
 
-    # Default framework
     if not framework_name:
         framework_name = "llama-benchy"
 
-    # Resolve framework plugin
     try:
         fw = get_benchmarking_framework(framework_name, v)
     except ValueError as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
 
-    # Build layered bench args with cascading precedence (highest → lowest):
-    #   1. -o CLI overrides        (applied below)
-    #   2. Profile / recipe bench  (bench_args from above)
-    #   3. Recipe benchmark block passthrough keys (e.g. tokenizer)
-    #   4. Framework defaults      (lowest)
+    # Build layered bench args
     passthrough_layer: dict = {}
     if fw.passthrough_args:
         recipe_bench_block = recipe._raw.get("benchmark", {}) if hasattr(recipe, '_raw') else {}
@@ -180,10 +173,8 @@ def _run_benchmark(
                 if key in recipe_bench_block:
                     passthrough_layer[key] = recipe_bench_block[key]
 
-    # Merge layers: defaults < passthrough < profile/recipe bench args
     bench_args = {**fw.get_default_args(), **passthrough_layer, **bench_args}
 
-    # Apply -b overrides on top
     for opt_str in bench_options:
         if "=" not in opt_str:
             click.echo("Error: --bench-option must be key=value, got: %s" % opt_str, err=True)
@@ -191,11 +182,9 @@ def _run_benchmark(
         key, _, val = opt_str.partition("=")
         bench_args[key.strip()] = fw.interpret_arg(key.strip(), val.strip())
 
-    # Inject --exit-on-first-fail into bench args when the CLI flag is set
     if exit_on_first_fail:
         bench_args["exit_on_first_fail"] = True
 
-    # Resolve effective timeout: CLI override > spec timeout > default
     effective_timeout = bench_timeout or (bench_spec.timeout if bench_spec else None) or DEFAULT_BENCHMARK_TIMEOUT
 
     # ---------------------------------------------------------------
@@ -229,7 +218,7 @@ def _run_benchmark(
 
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
-    # Node count validation / trimming (accounts for TP * PP, etc.)
+    # Node count validation / trimming
     if len(host_list) > 1 and not solo:
         try:
             required = runtime.compute_required_nodes(recipe, overrides)
@@ -255,7 +244,6 @@ def _run_benchmark(
                 )
 
     if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
-        # Check for conflict: required nodes > max_nodes is a hard error
         try:
             _req = runtime.compute_required_nodes(recipe, overrides)
         except ValueError:
@@ -282,31 +270,22 @@ def _run_benchmark(
         click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
         host_list = host_list[:1]
 
-    # Derive cluster_id
-    from sparkrun.orchestration.job_metadata import generate_cluster_id, save_job_metadata
-    cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
-
-    container_image = runtime.resolve_container(recipe, overrides)
+    # Resolve cache dir
     cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
     effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
-    ssh_kwargs = build_ssh_kwargs(config)
-    head_host = host_list[0]
 
-    # -- Port resolution --
-    # When --skip-run is set the server is already listening on the desired
-    # port, so auto-increment would mis-target a different (or empty) port.
-    config_chain = recipe.build_config_chain(overrides)
-    desired_port = int(config_chain.get("port") or 8000)
+    # For --skip-run, resolve port without auto-increment (server already listening)
     if skip_run:
-        serve_port = desired_port
-    else:
-        serve_port = find_available_port(head_host, desired_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
-        if serve_port != desired_port:
-            click.echo("Note: port %d in use, using %d instead" % (desired_port, serve_port))
-    # Feed resolved port back so the runtime and downstream code all use it
-    overrides["port"] = serve_port
+        config_chain = recipe.build_config_chain(overrides)
+        serve_port = int(config_chain.get("port") or 8000)
+        overrides["port"] = serve_port
+        # Derive cluster_id for skip-run (needed for stop)
+        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
 
-    # Rebuild config chain with the resolved port
+    container_image = runtime.resolve_container(recipe, overrides)
+
+    # Rebuild config chain for TP (used in output filename)
     config_chain = recipe.build_config_chain(overrides)
     effective_tp = int(config_chain.get("tensor_parallel") or 1)
 
@@ -338,118 +317,39 @@ def _run_benchmark(
     # 6. Launch inference (unless --skip-run)
     # ---------------------------------------------------------------
     launched = False
+    launch_result = None
     if not skip_run:
         click.echo("Step 1/3: Launching inference...")
 
-        # Save job metadata
-        if not dry_run:
-            try:
-                save_job_metadata(cluster_id, recipe, host_list,
-                                  overrides=overrides, cache_dir=str(config.cache_dir),
-                                  recipe_ref=recipe_ref)
-            except Exception:
-                logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
-
-        # Pre-launch preparation
-        runtime.prepare(recipe, host_list, config=config, dry_run=dry_run)
-
-        # Distribution
-        nccl_env = None
-        ib_ip_map: dict[str, str] = {}
-        if not runtime.is_delegating_runtime():
-            from sparkrun.orchestration.distribution import distribute_resources
-            nccl_env, ib_ip_map, mgmt_ip_map = distribute_resources(
-                container_image, recipe.model, host_list,
-                effective_cache_dir,
-                config, dry_run,
-                model_revision=recipe.model_revision,
-                recipe_name=recipe.name,
-            )
-
-        # Sync registry tuning configs
-        if sync_tuning and not dry_run:
-            from sparkrun.tuning.sync import sync_registry_tuning
-            try:
-                synced = sync_registry_tuning(
-                    _registry_mgr, recipe.runtime, dry_run=dry_run,
-                    registry_name=recipe.source_registry,
-                )
-                if synced:
-                    click.echo("Synced %d tuning config(s) from registries." % synced)
-            except Exception:
-                logger.debug("Failed to sync tuning configs", exc_info=True)
-
-        # Distribute tuning configs to remote hosts
-        if not runtime.is_delegating_runtime():
-            from sparkrun.tuning.distribute import distribute_tuning_to_hosts
-            try:
-                tuning_failed = distribute_tuning_to_hosts(
-                    recipe.runtime, host_list,
-                    dry_run=dry_run,
-                    **ssh_kwargs,
-                )
-                if tuning_failed:
-                    click.echo(
-                        "Warning: Tuning config distribution failed on: %s"
-                        % ", ".join(tuning_failed), err=True,
-                    )
-            except Exception:
-                logger.debug("Failed to distribute tuning configs", exc_info=True)
-
-        # Resolve GGUF models
-        from sparkrun.models.download import is_gguf_model, resolve_gguf_container_path
-        if is_gguf_model(recipe.model) and not dry_run:
-            gguf_container_path = resolve_gguf_container_path(
-                recipe.model, effective_cache_dir,
-            )
-            if gguf_container_path:
-                overrides["_gguf_model_path"] = gguf_container_path
-                overrides["model"] = gguf_container_path
-
-        # Generate serve command with served_model_name suppressed so the
-        # server responds to the raw HF model ID that llama-benchy sends.
-        serve_command = runtime.generate_command(
+        launch_result = launch_inference(
             recipe=recipe,
+            runtime=runtime,
+            host_list=host_list,
             overrides=overrides,
-            is_cluster=not is_solo,
-            num_nodes=len(host_list),
-            head_ip=None,
-            skip_keys={"served_model_name"},
-        )
-
-        click.echo("Serve command:")
-        for line in serve_command.strip().splitlines():
-            click.echo("  %s" % line)
-        click.echo("")
-
-        # Best-effort page cache clear
-        if not runtime.is_delegating_runtime():
-            from sparkrun.orchestration.primitives import try_clear_page_cache
-            try_clear_page_cache(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
-
-        # Launch — pass skip_keys so native-cluster runtimes (sglang,
-        # vllm-distributed, llama-cpp) that regenerate the serve command
-        # internally also suppress served_model_name.
-        rc = runtime.run(
-            hosts=host_list,
-            image=container_image,
-            serve_command=serve_command,
-            recipe=recipe,
-            overrides=overrides,
-            cluster_id=cluster_id,
-            env=recipe.env,
-            cache_dir=effective_cache_dir,
             config=config,
+            v=v,
+            is_solo=is_solo,
+            cache_dir=effective_cache_dir,
+            recipe_ref=recipe_ref,
+            registry_mgr=registry_mgr,
+            auto_port=True,
+            sync_tuning=sync_tuning,
+            skip_keys={"served_model_name"},
             dry_run=dry_run,
             detached=True,
-            nccl_env=nccl_env,
-            ib_ip_map=ib_ip_map,
-            skip_keys={"served_model_name"},
         )
 
-        if rc != 0 and not dry_run:
-            click.echo("Error: inference launch failed (exit code %d)" % rc, err=True)
-            sys.exit(rc)
+        if launch_result.rc != 0 and not dry_run:
+            click.echo("Error: inference launch failed (exit code %d)" % launch_result.rc, err=True)
+            sys.exit(launch_result.rc)
+
+        cluster_id = launch_result.cluster_id
+        serve_port = launch_result.serve_port
+
+        click.echo("Serve command:")
+        for line in launch_result.serve_command.strip().splitlines():
+            click.echo("  %s" % line)
+        click.echo("")
 
         launched = True
     else:
@@ -458,6 +358,9 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 7. Wait for readiness and build target URL
     # ---------------------------------------------------------------
+    ssh_kwargs = build_ssh_kwargs(config)
+    head_host = host_list[0]
+
     result_file = tempfile.mktemp(suffix=".json", prefix="sparkrun_bench_")
     try:
         if is_local_host(head_host):
@@ -489,9 +392,6 @@ def _run_benchmark(
                     _stop_inference(runtime, host_list, cluster_id, config, dry_run)
                 sys.exit(1)
 
-            # Port is open — now confirm server is available.
-            # Some inference servers (e.g., llama.cpp) bind the port immediately but
-            # only return HTTP 200 on /v1/models once the model is loaded.
             health_url = "http://%s:%d/v1/models" % (target_ip, serve_port)
             click.echo("Waiting for model to finish loading (%s)..." % health_url)
             healthy = wait_for_healthy(
@@ -538,10 +438,6 @@ def _run_benchmark(
             click.echo("--- benchmark output ---")
             bench_start = time.monotonic()
             try:
-                # Stream stdout live so the user sees progress, while
-                # capturing it for result parsing afterwards.
-                # Force unbuffered output so lines appear in real-time
-                # (Python subprocesses block-buffer when stdout is a pipe).
                 import os
                 bench_env = os.environ.copy()
                 bench_env["PYTHONUNBUFFERED"] = "1"
@@ -598,13 +494,11 @@ def _run_benchmark(
         if not dry_run:
             results = fw.parse_results(stdout_text, stderr_text, result_file=result_file)
 
-            # Print summary of results
             rows = results.get("rows", [])
             if rows:
                 click.echo("")
                 click.echo("Results: %d test row(s) collected" % len(rows))
 
-            # Export results
             if not output_file:
                 profile_slug = profile.replace("/", "_").replace("@", "") if profile else "default"
                 effective_pp = int(config_chain.get("pipeline_parallel") or 1)
@@ -629,9 +523,6 @@ def _run_benchmark(
             )
             click.echo("Results saved to: %s" % output_file)
 
-            # Write framework output formats alongside the YAML.
-            # Frameworks return keyed outputs (e.g. "json", "csv") in results;
-            # each is written to a file with the matching extension.
             from pathlib import Path
             _OUTPUT_WRITERS = {
                 "json": lambda data, path: path.write_text(
